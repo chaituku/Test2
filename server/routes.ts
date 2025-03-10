@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
+import * as ws from "ws";
 import { setupAuth } from "./auth";
 import { storage } from "./storage";
 
@@ -203,5 +204,103 @@ export function registerRoutes(app: Express): Server {
   });
 
   const httpServer = createServer(app);
+  
+  // Setup WebSocket server
+  const wss = new ws.Server({ server: httpServer, path: '/ws' });
+  
+  // Map to store active connections
+  const activeConnections = new Map();
+  
+  wss.on('connection', (ws) => {
+    console.log('New WebSocket connection established');
+    
+    // Handle authentication and store user information
+    ws.on('message', async (message) => {
+      try {
+        const data = JSON.parse(message.toString());
+        
+        // Handle different message types
+        switch (data.type) {
+          case 'auth':
+            // Authenticate user and store their ID with the connection
+            if (data.userId) {
+              activeConnections.set(data.userId, ws);
+              console.log(`User ${data.userId} authenticated on WebSocket`);
+              
+              // Send acknowledgment
+              ws.send(JSON.stringify({ 
+                type: 'auth_success',
+                message: 'Authentication successful' 
+              }));
+            }
+            break;
+            
+          case 'chat_message':
+            // Handle a new chat message
+            if (data.message && data.senderId && (data.receiverId || data.chatGroupId)) {
+              // Store the message
+              const chatMessage = await storage.createChatMessage({
+                senderId: data.senderId,
+                receiverId: data.receiverId,
+                chatGroupId: data.chatGroupId,
+                content: data.message
+              });
+              
+              // Broadcast to chat group members if it's a group chat
+              if (data.chatGroupId) {
+                const groupMembers = await storage.getEventParticipantsByEvent(data.chatGroupId);
+                groupMembers.forEach(member => {
+                  const memberWs = activeConnections.get(member.userId);
+                  if (memberWs && memberWs.readyState === ws.OPEN) {
+                    memberWs.send(JSON.stringify({
+                      type: 'chat_message',
+                      message: chatMessage
+                    }));
+                  }
+                });
+              } 
+              // Send to specific user if it's a direct message
+              else if (data.receiverId) {
+                const receiverWs = activeConnections.get(data.receiverId);
+                if (receiverWs && receiverWs.readyState === ws.OPEN) {
+                  receiverWs.send(JSON.stringify({
+                    type: 'chat_message',
+                    message: chatMessage
+                  }));
+                }
+              }
+            }
+            break;
+            
+          case 'mark_read':
+            // Mark messages as read
+            if (data.userId && (data.chatGroupId || data.senderId)) {
+              await storage.markMessagesAsRead(data.userId, data.chatGroupId);
+              console.log(`Marked messages as read for user ${data.userId}`);
+            }
+            break;
+        }
+      } catch (error) {
+        console.error('WebSocket message error:', error);
+        ws.send(JSON.stringify({ 
+          type: 'error', 
+          message: 'Failed to process message' 
+        }));
+      }
+    });
+    
+    // Handle disconnection
+    ws.on('close', () => {
+      // Remove the connection from active connections
+      for (const [userId, connection] of activeConnections.entries()) {
+        if (connection === ws) {
+          activeConnections.delete(userId);
+          console.log(`User ${userId} disconnected from WebSocket`);
+          break;
+        }
+      }
+    });
+  });
+  
   return httpServer;
 }
