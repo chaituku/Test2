@@ -1,6 +1,7 @@
+import React, { useState } from "react";
 import { useAuth } from "@/hooks/use-auth";
-import { useQuery } from "@tanstack/react-query";
-import { Business, Court, Booking } from "@shared/schema";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { Business, Court, Booking, InsertBooking } from "@shared/schema";
 import { Button } from "@/components/ui/button";
 import { 
   Calendar, 
@@ -10,7 +11,13 @@ import {
   MapPin, 
   Plus, 
   X, 
-  CalendarDays 
+  CalendarDays,
+  Map,
+  Search,
+  Info,
+  Star,
+  CreditCard,
+  Filter
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { 
@@ -19,15 +26,34 @@ import {
   DialogDescription, 
   DialogFooter, 
   DialogHeader, 
-  DialogTitle, 
+  DialogTitle,
   DialogTrigger 
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { format } from "date-fns";
+import { format, addMinutes, isSameDay, isWithinInterval, startOfDay, endOfDay } from "date-fns";
 import { Calendar as CalendarComponent } from "@/components/ui/calendar";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Link, useLocation } from "wouter";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
+import {
+  Table,
+  TableBody,
+  TableCaption,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 export default function HomePage() {
   const { user, logoutMutation } = useAuth();
@@ -173,6 +199,14 @@ export default function HomePage() {
           </div>
           <div className="flex items-center gap-4">
             <span className="text-sm text-muted-foreground">Welcome, {user?.username}</span>
+            {user?.role === "business" && (
+              <Link href="/business">
+                <Button variant="outline" size="sm">
+                  <Settings className="h-4 w-4 mr-2" />
+                  Business Dashboard
+                </Button>
+              </Link>
+            )}
             <Button variant="outline" size="sm" onClick={handleLogout} disabled={logoutMutation.isPending}>
               <LogOut className="h-4 w-4 mr-2" />
               Logout
@@ -362,7 +396,7 @@ export default function HomePage() {
 
       {/* Booking Dialog */}
       <Dialog open={bookingDialogOpen} onOpenChange={setBookingDialogOpen}>
-        <DialogContent className="sm:max-w-[425px]">
+        <DialogContent className="sm:max-w-[500px]">
           <DialogHeader>
             <DialogTitle>Book a Court</DialogTitle>
             <DialogDescription>
@@ -372,57 +406,156 @@ export default function HomePage() {
           
           <div className="py-4">
             <Tabs defaultValue="date" className="w-full">
-              <TabsList className="grid w-full grid-cols-2">
-                <TabsTrigger value="date">Date</TabsTrigger>
-                <TabsTrigger value="time">Time</TabsTrigger>
+              <TabsList className="grid w-full grid-cols-3">
+                <TabsTrigger value="date">
+                  <CalendarDays className="h-4 w-4 mr-2" />
+                  Date
+                </TabsTrigger>
+                <TabsTrigger value="time">
+                  <Clock className="h-4 w-4 mr-2" />
+                  Time
+                </TabsTrigger>
+                <TabsTrigger value="review">
+                  <CheckCircle2 className="h-4 w-4 mr-2" />
+                  Review
+                </TabsTrigger>
               </TabsList>
+              
               <TabsContent value="date" className="mt-4">
-                <CalendarComponent
-                  mode="single"
-                  selected={selectedDate}
-                  onSelect={setSelectedDate}
-                  className="rounded-md border"
-                  disabled={(date) => {
-                    // Disable dates in the past
-                    const today = new Date();
-                    today.setHours(0, 0, 0, 0);
-                    return date < today;
-                  }}
-                />
+                <div className="mb-4">
+                  <p className="text-sm text-muted-foreground mb-2">Select a date for your booking:</p>
+                  <div className="border rounded-lg p-4">
+                    <CalendarComponent
+                      mode="single"
+                      selected={selectedDate}
+                      onSelect={setSelectedDate}
+                      className="rounded-md mx-auto"
+                      disabled={(date) => {
+                        // Disable dates in the past
+                        const today = new Date();
+                        today.setHours(0, 0, 0, 0);
+                        return date < today;
+                      }}
+                    />
+                  </div>
+                </div>
+                
+                <div className="flex justify-end">
+                  <Button onClick={() => document.getElementById('time-tab')?.click()}>
+                    Next: Select Time
+                    <Calendar className="h-4 w-4 ml-2" />
+                  </Button>
+                </div>
               </TabsContent>
+              
               <TabsContent value="time" className="mt-4">
-                <div className="grid grid-cols-4 gap-2">
-                  {timeSlots.length > 0 ? (
-                    timeSlots.map((time) => (
-                      <Button
-                        key={time}
-                        variant={selectedTime === time ? "default" : "outline"}
-                        className="text-sm"
-                        onClick={() => setSelectedTime(time)}
-                      >
-                        {time}
-                      </Button>
-                    ))
-                  ) : (
-                    <p className="col-span-4 text-center text-muted-foreground py-4">
-                      No time slots available for the selected date.
-                    </p>
-                  )}
+                <div className="mb-4">
+                  <p className="text-sm text-muted-foreground mb-2">
+                    Selected date: <Badge variant="outline">{selectedDate ? format(selectedDate, "MMM d, yyyy") : 'No date selected'}</Badge>
+                  </p>
+                  <p className="text-sm text-muted-foreground mb-4">Select a 30-minute time slot:</p>
+                  
+                  <div className="border rounded-lg p-4">
+                    <div className="grid grid-cols-4 gap-2">
+                      {timeSlots.length > 0 ? (
+                        timeSlots.map((time) => (
+                          <Button
+                            key={time}
+                            variant={selectedTime === time ? "default" : "outline"}
+                            className="text-sm"
+                            onClick={() => setSelectedTime(time)}
+                          >
+                            {time}
+                          </Button>
+                        ))
+                      ) : (
+                        <p className="col-span-4 text-center text-muted-foreground py-4">
+                          No time slots available for the selected date.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="flex justify-between">
+                  <Button variant="outline" onClick={() => document.getElementById('date-tab')?.click()}>
+                    <Calendar className="h-4 w-4 mr-2" />
+                    Back to Calendar
+                  </Button>
+                  <Button
+                    onClick={() => document.getElementById('review-tab')?.click()}
+                    disabled={!selectedTime}
+                  >
+                    Review Booking
+                    <CheckCircle2 className="h-4 w-4 ml-2" />
+                  </Button>
+                </div>
+              </TabsContent>
+              
+              <TabsContent value="review" className="mt-4">
+                <div className="border rounded-lg p-4 mb-4">
+                  <h3 className="font-medium mb-3">Booking Summary</h3>
+                  
+                  <div className="space-y-3">
+                    <div className="flex justify-between">
+                      <span className="text-sm text-muted-foreground">Facility:</span>
+                      <span className="font-medium">{selectedBusiness?.name}</span>
+                    </div>
+                    
+                    <div className="flex justify-between">
+                      <span className="text-sm text-muted-foreground">Court:</span>
+                      <span className="font-medium">{selectedCourt?.name}</span>
+                    </div>
+                    
+                    <div className="flex justify-between">
+                      <span className="text-sm text-muted-foreground">Date:</span>
+                      <span className="font-medium">
+                        {selectedDate ? format(selectedDate, "MMMM d, yyyy") : 'Not selected'}
+                      </span>
+                    </div>
+                    
+                    <div className="flex justify-between">
+                      <span className="text-sm text-muted-foreground">Time:</span>
+                      <span className="font-medium">
+                        {selectedTime ? format(new Date(`2000-01-01T${selectedTime}`), "h:mm a") : 'Not selected'}
+                      </span>
+                    </div>
+                    
+                    <div className="flex justify-between">
+                      <span className="text-sm text-muted-foreground">Duration:</span>
+                      <span className="font-medium">30 minutes</span>
+                    </div>
+                  </div>
+                  
+                  <div className="mt-4 pt-4 border-t">
+                    <div className="flex items-center justify-between text-lg font-semibold">
+                      <span>Total:</span>
+                      <span>Free</span>
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="flex justify-between">
+                  <Button variant="outline" onClick={() => document.getElementById('time-tab')?.click()}>
+                    <Clock className="h-4 w-4 mr-2" />
+                    Change Time
+                  </Button>
+                  <Button 
+                    onClick={handleBookCourt}
+                    disabled={!selectedCourt || !selectedDate || !selectedTime}
+                  >
+                    <Plus className="h-4 w-4 mr-2" />
+                    Confirm Booking
+                  </Button>
                 </div>
               </TabsContent>
             </Tabs>
           </div>
-
-          <DialogFooter className="flex items-center justify-between">
-            <Button variant="outline" onClick={() => setBookingDialogOpen(false)}>
-              <X className="h-4 w-4 mr-2" />
-              Cancel
-            </Button>
-            <Button onClick={handleBookCourt}>
-              <Plus className="h-4 w-4 mr-2" />
-              Confirm Booking
-            </Button>
-          </DialogFooter>
+          
+          {/* Hidden spans for tab navigation */}
+          <span id="date-tab" className="hidden" onClick={() => document.querySelector('[value="date"]')?.click()}></span>
+          <span id="time-tab" className="hidden" onClick={() => document.querySelector('[value="time"]')?.click()}></span>
+          <span id="review-tab" className="hidden" onClick={() => document.querySelector('[value="review"]')?.click()}></span>
         </DialogContent>
       </Dialog>
     </div>
