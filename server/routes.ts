@@ -1,9 +1,54 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import * as ws from "ws";
-const { WebSocket } = ws;
+const { WebSocket, WebSocketServer } = ws;
 import { setupAuth } from "./auth";
 import { storage } from "./storage";
+import crypto from "crypto";
+
+// Helper functions for message encryption/decryption
+const encryptMessage = (message: string): string => {
+  try {
+    // Use environment variable for key or fallback to a default (in production, never use a default)
+    const key = process.env.MESSAGE_ENCRYPTION_KEY || 'badminton-platform-secure-communications-key';
+    const iv = crypto.randomBytes(16);
+    const cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(key.slice(0, 32)), iv);
+    
+    let encrypted = cipher.update(message, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    
+    // Return IV concatenated with the encrypted message (IV is needed for decryption)
+    return iv.toString('hex') + ':' + encrypted;
+  } catch (error) {
+    console.error('Error encrypting message:', error);
+    return message; // Fallback to unencrypted if encryption fails
+  }
+};
+
+const decryptMessage = (encryptedMessage: string): string => {
+  try {
+    const key = process.env.MESSAGE_ENCRYPTION_KEY || 'badminton-platform-secure-communications-key';
+    
+    // Split IV and encrypted message
+    const parts = encryptedMessage.split(':');
+    if (parts.length !== 2) {
+      return encryptedMessage; // Not in expected format, return as is
+    }
+    
+    const iv = Buffer.from(parts[0], 'hex');
+    const encrypted = parts[1];
+    
+    const decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(key.slice(0, 32)), iv);
+    
+    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    
+    return decrypted;
+  } catch (error) {
+    console.error('Error decrypting message:', error);
+    return 'Message could not be decrypted'; // Provide feedback if decryption fails
+  }
+};
 
 export function registerRoutes(app: Express): Server {
   // Sets up authentication routes (/api/register, /api/login, /api/logout, /api/user)
@@ -519,9 +564,40 @@ export function registerRoutes(app: Express): Server {
   
   // Map to store active connections
   const activeConnections = new Map();
+
+  // Heartbeat interval in milliseconds (30 seconds)
+  const HEARTBEAT_INTERVAL = 30000;
+  
+  // Start server heartbeat
+  const heartbeatInterval = setInterval(() => {
+    wss.clients.forEach((ws) => {
+      if (ws.isAlive === false) {
+        // If client didn't respond to previous heartbeat, terminate
+        return ws.terminate();
+      }
+      
+      // Mark as not alive until pong is received
+      ws.isAlive = false;
+      
+      // Send heartbeat
+      ws.send(JSON.stringify({
+        type: 'heartbeat',
+        timestamp: Date.now()
+      }));
+    });
+  }, HEARTBEAT_INTERVAL);
+  
+  // Clean up interval on server close
+  wss.on('close', () => {
+    clearInterval(heartbeatInterval);
+  });
   
   wss.on('connection', (ws) => {
     console.log('New WebSocket connection established');
+    
+    // Initialize connection properties
+    ws.isAlive = true;
+    ws.userId = null;
     
     // Handle authentication and store user information
     ws.on('message', async (message) => {
@@ -534,6 +610,7 @@ export function registerRoutes(app: Express): Server {
             // Authenticate user and store their ID with the connection
             if (data.userId) {
               activeConnections.set(data.userId, ws);
+              ws.userId = data.userId; // Store userId directly on the connection
               console.log(`User ${data.userId} authenticated on WebSocket`);
               
               // Send acknowledgment
@@ -547,13 +624,30 @@ export function registerRoutes(app: Express): Server {
           case 'chat_message':
             // Handle a new chat message
             if (data.message && data.senderId && (data.receiverId || data.chatGroupId)) {
-              // Store the message
+              // Encrypt message content before storing in database
+              const encryptedContent = encryptMessage(data.message);
+              
+              // Store the encrypted message
               const chatMessage = await storage.createChatMessage({
                 senderId: data.senderId,
                 receiverId: data.receiverId,
                 chatGroupId: data.chatGroupId,
-                content: data.message
+                content: encryptedContent,
+                messageId: data.messageId
               });
+              
+              // Create message with decrypted content for sending to clients
+              const messageWithDecryptedContent = {
+                ...chatMessage,
+                content: data.message // Use original unencrypted message for clients
+              };
+              
+              // Include message ID in the response for delivery confirmation
+              const responseData = {
+                type: 'chat_message',
+                messageId: data.messageId || `server-${Date.now()}`,
+                message: messageWithDecryptedContent
+              };
               
               // Broadcast to chat group members if it's a group chat
               if (data.chatGroupId) {
@@ -561,10 +655,7 @@ export function registerRoutes(app: Express): Server {
                 groupMembers.forEach(member => {
                   const memberWs = activeConnections.get(member.userId);
                   if (memberWs && memberWs.readyState === WebSocket.OPEN) {
-                    memberWs.send(JSON.stringify({
-                      type: 'chat_message',
-                      message: chatMessage
-                    }));
+                    memberWs.send(JSON.stringify(responseData));
                   }
                 });
               } 
@@ -572,9 +663,52 @@ export function registerRoutes(app: Express): Server {
               else if (data.receiverId) {
                 const receiverWs = activeConnections.get(data.receiverId);
                 if (receiverWs && receiverWs.readyState === WebSocket.OPEN) {
-                  receiverWs.send(JSON.stringify({
-                    type: 'chat_message',
-                    message: chatMessage
+                  receiverWs.send(JSON.stringify(responseData));
+                }
+              }
+              
+              // Send delivery confirmation back to sender
+              if (data.messageId) {
+                ws.send(JSON.stringify({
+                  type: 'message_delivered',
+                  messageId: data.messageId,
+                  timestamp: Date.now()
+                }));
+              }
+            }
+            break;
+            
+          case 'message_delivered':
+            // Forward delivery confirmation to the original sender
+            if (data.messageId && data.userId) {
+              const originalSenderId = data.messageId.split('-').pop();
+              if (originalSenderId) {
+                const senderWs = activeConnections.get(parseInt(originalSenderId));
+                if (senderWs && senderWs.readyState === WebSocket.OPEN) {
+                  senderWs.send(JSON.stringify({
+                    type: 'message_delivered',
+                    messageId: data.messageId,
+                    userId: data.userId,
+                    timestamp: Date.now()
+                  }));
+                }
+              }
+            }
+            break;
+            
+          case 'message_read':
+            // Handle message read confirmation
+            if (data.messageId && data.userId) {
+              // Forward read confirmation to the original sender
+              const originalSenderId = data.messageId.split('-').pop();
+              if (originalSenderId) {
+                const senderWs = activeConnections.get(parseInt(originalSenderId));
+                if (senderWs && senderWs.readyState === WebSocket.OPEN) {
+                  senderWs.send(JSON.stringify({
+                    type: 'message_read',
+                    messageId: data.messageId,
+                    userId: data.userId,
+                    timestamp: Date.now()
                   }));
                 }
               }
@@ -586,7 +720,67 @@ export function registerRoutes(app: Express): Server {
             if (data.userId && (data.chatGroupId || data.senderId)) {
               await storage.markMessagesAsRead(data.userId, data.chatGroupId);
               console.log(`Marked messages as read for user ${data.userId}`);
+              
+              // Notify the sender that their messages were read
+              if (data.senderId) {
+                const senderWs = activeConnections.get(data.senderId);
+                if (senderWs && senderWs.readyState === WebSocket.OPEN) {
+                  senderWs.send(JSON.stringify({
+                    type: 'message_read',
+                    userId: data.userId,
+                    timestamp: Date.now()
+                  }));
+                }
+              }
             }
+            break;
+            
+          case 'typing':
+          case 'typing_stop':
+            // Handle typing indicators
+            if (data.userId && (data.chatGroupId || data.recipientId)) {
+              if (data.chatGroupId) {
+                // Broadcast typing status to all group members
+                const groupMembers = await storage.getEventParticipantsByEvent(data.chatGroupId);
+                groupMembers.forEach(member => {
+                  if (member.userId !== data.userId) {
+                    const memberWs = activeConnections.get(member.userId);
+                    if (memberWs && memberWs.readyState === WebSocket.OPEN) {
+                      memberWs.send(JSON.stringify({
+                        type: data.type,
+                        userId: data.userId,
+                        chatGroupId: data.chatGroupId,
+                        timestamp: data.timestamp || Date.now()
+                      }));
+                    }
+                  }
+                });
+              } else if (data.recipientId) {
+                // Send typing status to specific recipient
+                const recipientWs = activeConnections.get(data.recipientId);
+                if (recipientWs && recipientWs.readyState === WebSocket.OPEN) {
+                  recipientWs.send(JSON.stringify({
+                    type: data.type,
+                    userId: data.userId,
+                    timestamp: data.timestamp || Date.now()
+                  }));
+                }
+              }
+            }
+            break;
+            
+          case 'heartbeat':
+            // Respond to client heartbeat
+            ws.isAlive = true;
+            ws.send(JSON.stringify({
+              type: 'heartbeat_ack',
+              timestamp: Date.now()
+            }));
+            break;
+            
+          case 'heartbeat_ack':
+            // Client acknowledged heartbeat
+            ws.isAlive = true;
             break;
         }
       } catch (error) {
@@ -601,10 +795,15 @@ export function registerRoutes(app: Express): Server {
     // Handle disconnection
     ws.on('close', () => {
       // Remove the connection from active connections
-      for (const [userId, connection] of activeConnections.entries()) {
-        if (connection === ws) {
-          activeConnections.delete(userId);
-          console.log(`User ${userId} disconnected from WebSocket`);
+      if (ws.userId) {
+        activeConnections.delete(ws.userId);
+        console.log(`User ${ws.userId} disconnected from WebSocket`);
+      } else {
+        // If userId isn't directly on the connection, search through the map
+        for (const [userId, connection] of activeConnections.entries()) {
+          if (connection === ws) {
+            activeConnections.delete(userId);
+            console.log(`User ${userId} disconnected from WebSocket`);
           break;
         }
       }

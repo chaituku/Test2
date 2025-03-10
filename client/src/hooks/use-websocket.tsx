@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { webSocketService } from '@/lib/websocket';
+import { webSocketService, MessageType } from '@/lib/websocket';
 import { useAuth } from '@/hooks/use-auth';
 import { ChatMessage } from '@shared/schema';
 
@@ -10,64 +10,110 @@ export function useWebSocket() {
   const [connectionState, setConnectionState] = useState<WebSocketConnectionState>('disconnected');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [pendingMessages, setPendingMessages] = useState<Map<string, string>>(new Map());
+  const [typingUsers, setTypingUsers] = useState<Map<number, boolean>>(new Map());
+  const [queueLength, setQueueLength] = useState<number>(0);
   const reconnectTimerRef = useRef<number | null>(null);
+
+  // Handle new messages
+  const handleNewMessage = useCallback((message: ChatMessage) => {
+    setMessages(prevMessages => [...prevMessages, message]);
+  }, []);
+
+  // Handle delivery confirmations
+  const handleDeliveryConfirmation = useCallback((messageId: string) => {
+    setPendingMessages(prev => {
+      const newMap = new Map(prev);
+      newMap.delete(messageId);
+      return newMap;
+    });
+  }, []);
+
+  // Handle typing indicators
+  const handleTypingIndicator = useCallback((userId: number, isTyping: boolean) => {
+    setTypingUsers(prev => {
+      const newMap = new Map(prev);
+      if (isTyping) {
+        newMap.set(userId, true);
+      } else {
+        newMap.delete(userId);
+      }
+      return newMap;
+    });
+  }, []);
 
   // Connect to the WebSocket server when the user is authenticated
   useEffect(() => {
     if (user?.id) {
-      setConnectionState('connecting');
-      
       try {
         webSocketService.connect(user.id);
         
-        // Setup event listeners for connection status
-        const handleOpen = () => {
-          setConnectionState('connected');
-          setError(null);
-        };
-        
-        const handleClose = () => {
-          setConnectionState('disconnected');
-          
-          // Attempt to reconnect after a delay
-          if (reconnectTimerRef.current) {
-            window.clearTimeout(reconnectTimerRef.current);
-          }
-          
-          reconnectTimerRef.current = window.setTimeout(() => {
-            if (user?.id) {
-              webSocketService.connect(user.id);
-              setConnectionState('connecting');
-            }
-          }, 3000);
-        };
-        
-        const handleError = (errorMessage: string) => {
-          setConnectionState('error');
-          setError(errorMessage);
-        };
-        
-        // Subscribe to events from the WebSocket service
-        window.addEventListener('websocket-open', handleOpen);
-        window.addEventListener('websocket-close', handleClose);
-        
-        // Fix for CustomEvent handling in TypeScript
-        const errorHandler = ((e: Event) => {
+        // Update connection state when it changes
+        const onStatusChange = ((e: Event) => {
           if (e instanceof CustomEvent) {
-            handleError(e.detail);
+            setConnectionState(e.detail as WebSocketConnectionState);
+            if (e.detail === 'connected') {
+              setError(null);
+            }
           }
         }) as EventListener;
         
+        // Error handler
+        const errorHandler = ((e: Event) => {
+          if (e instanceof CustomEvent) {
+            setError(e.detail);
+          }
+        }) as EventListener;
+        
+        // Handle queue updates
+        const onQueueUpdate = ((e: Event) => {
+          if (e instanceof CustomEvent && e.detail && typeof e.detail.queueLength === 'number') {
+            setQueueLength(e.detail.queueLength);
+          }
+        }) as EventListener;
+        
+        // Handle message failures
+        const onMessageFailed = ((e: Event) => {
+          if (e instanceof CustomEvent) {
+            const messageId = e.detail as string;
+            setPendingMessages(prev => {
+              const newMap = new Map(prev);
+              newMap.delete(messageId);
+              return newMap;
+            });
+            setError(`Message delivery failed: ${messageId}`);
+          }
+        }) as EventListener;
+        
+        // Subscribe to WebSocket service events
+        window.addEventListener('websocket-status-change', onStatusChange);
         window.addEventListener('websocket-error', errorHandler);
+        window.addEventListener('websocket-message-queued', onQueueUpdate);
+        window.addEventListener('websocket-queue-processed', onQueueUpdate);
+        window.addEventListener('websocket-message-failed', onMessageFailed);
+        
+        // Register handlers for messages, delivery confirmations, and typing indicators
+        webSocketService.addMessageHandler(handleNewMessage);
+        webSocketService.addDeliveryConfirmationHandler(handleDeliveryConfirmation);
+        webSocketService.addTypingIndicatorHandler(handleTypingIndicator);
+        
+        // Set initial connection state
+        setConnectionState(webSocketService.getConnectionStatus());
         
         return () => {
           webSocketService.disconnect();
-          setConnectionState('disconnected');
           
           // Clean up event listeners
-          window.removeEventListener('websocket-open', handleOpen);
-          window.removeEventListener('websocket-close', handleClose);
+          window.removeEventListener('websocket-status-change', onStatusChange);
           window.removeEventListener('websocket-error', errorHandler);
+          window.removeEventListener('websocket-message-queued', onQueueUpdate);
+          window.removeEventListener('websocket-queue-processed', onQueueUpdate);
+          window.removeEventListener('websocket-message-failed', onMessageFailed);
+          
+          // Remove handlers
+          webSocketService.removeMessageHandler(handleNewMessage);
+          webSocketService.removeDeliveryConfirmationHandler(handleDeliveryConfirmation);
+          webSocketService.removeTypingIndicatorHandler(handleTypingIndicator);
           
           if (reconnectTimerRef.current) {
             window.clearTimeout(reconnectTimerRef.current);
@@ -77,30 +123,29 @@ export function useWebSocket() {
         setConnectionState('error');
         setError(err instanceof Error ? err.message : 'Unknown error connecting to WebSocket');
       }
+    } else {
+      setConnectionState('disconnected');
     }
-  }, [user?.id]);
+  }, [user?.id, handleNewMessage, handleDeliveryConfirmation, handleTypingIndicator]);
 
-  // Add a message handler to listen for new messages
-  useEffect(() => {
-    const handleNewMessage = (message: ChatMessage) => {
-      setMessages(prevMessages => [...prevMessages, message]);
-    };
-    
-    webSocketService.addMessageHandler(handleNewMessage);
-    
-    return () => {
-      webSocketService.removeMessageHandler(handleNewMessage);
-    };
-  }, []);
-
-  // Send a chat message
+  // Send a chat message with delivery tracking
   const sendMessage = useCallback((message: string, recipientId?: number, chatGroupId?: number) => {
     try {
-      webSocketService.sendChatMessage(message, recipientId, chatGroupId);
-      return true;
+      const messageId = webSocketService.sendChatMessage(message, recipientId, chatGroupId);
+      
+      // Add to pending messages
+      if (messageId) {
+        setPendingMessages(prev => {
+          const newMap = new Map(prev);
+          newMap.set(messageId, message);
+          return newMap;
+        });
+        return messageId;
+      }
+      return null;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send message');
-      return false;
+      return null;
     }
   }, []);
 
@@ -115,10 +160,20 @@ export function useWebSocket() {
     }
   }, []);
 
+  // Send typing indicator
+  const sendTypingIndicator = useCallback((isTyping: boolean, recipientId?: number, chatGroupId?: number) => {
+    try {
+      webSocketService.sendTypingIndicator(isTyping, recipientId, chatGroupId);
+      return true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to send typing indicator');
+      return false;
+    }
+  }, []);
+
   // Explicitly attempt to reconnect
   const reconnect = useCallback(() => {
     if (user?.id) {
-      setConnectionState('connecting');
       setError(null);
       webSocketService.connect(user.id);
     }
@@ -132,10 +187,15 @@ export function useWebSocket() {
   return {
     connectionState,
     connected: connectionState === 'connected',
+    connecting: connectionState === 'connecting',
     messages,
     error,
+    pendingMessages,
+    typingUsers,
+    queueLength,
     sendMessage,
     markAsRead,
+    sendTypingIndicator,
     reconnect,
     clearMessages
   };

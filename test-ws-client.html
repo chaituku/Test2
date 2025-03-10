@@ -10,6 +10,7 @@
       max-width: 800px;
       margin: 0 auto;
       padding: 20px;
+      color: #333;
     }
     #messages {
       height: 300px;
@@ -17,94 +18,414 @@
       margin-bottom: 20px;
       padding: 10px;
       overflow-y: auto;
+      border-radius: 5px;
     }
-    input, button {
+    input, button, select {
       padding: 8px;
       margin-right: 5px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+    }
+    button {
+      background-color: #4a67e3;
+      color: white;
+      border: none;
+      cursor: pointer;
+      transition: background-color 0.3s;
+    }
+    button:hover {
+      background-color: #3451c7;
+    }
+    button:disabled {
+      background-color: #cccccc;
+      cursor: not-allowed;
     }
     .message {
       margin-bottom: 5px;
-      padding: 5px;
+      padding: 8px;
       border-radius: 5px;
+      position: relative;
+      max-width: 80%;
+      word-wrap: break-word;
     }
     .sent {
       background-color: #e3f2fd;
       text-align: right;
+      margin-left: auto;
+      border-bottom-right-radius: 0;
     }
     .received {
       background-color: #f1f1f1;
+      text-align: left;
+      margin-right: auto;
+      border-bottom-left-radius: 0;
     }
     .status {
       background-color: #f8f9fa;
       text-align: center;
       font-style: italic;
+      max-width: 100%;
+      opacity: 0.8;
     }
     .control-panel {
       display: flex;
-      margin-bottom: 10px;
+      margin-bottom: 15px;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
     }
     .control-panel button {
+      margin-right: 10px;
+    }
+    .status-indicator {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-right: 10px;
+    }
+    .status-disconnected { background-color: #d32f2f; }
+    .status-connecting { background-color: #ff9800; }
+    .status-connected { background-color: #4caf50; }
+    
+    .typing-indicator {
+      display: flex;
+      align-items: center;
+      color: #666;
+      font-style: italic;
+      height: 20px;
+      margin-bottom: 10px;
+    }
+    .typing-indicator span {
+      height: 8px;
+      width: 8px;
+      border-radius: 50%;
+      background-color: #666;
       margin-right: 5px;
+      display: inline-block;
+      animation: typing 1s infinite ease-in-out;
+    }
+    .typing-indicator span:nth-child(1) { animation-delay: 0s; }
+    .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+    .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+    
+    @keyframes typing {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.5); }
+      100% { transform: scale(1); }
+    }
+    
+    .message-info {
+      font-size: 0.7em;
+      color: #888;
+      margin-top: 2px;
+    }
+    
+    .message-delivered::after {
+      content: "✓";
+      position: absolute;
+      bottom: 2px;
+      right: 5px;
+      font-size: 0.8em;
+      color: #4caf50;
+    }
+    
+    .message-read::after {
+      content: "✓✓";
+      position: absolute;
+      bottom: 2px;
+      right: 5px;
+      font-size: 0.8em;
+      color: #4caf50;
+    }
+    
+    .message-failed::after {
+      content: "!";
+      position: absolute;
+      bottom: 2px;
+      right: 5px;
+      font-size: 0.8em;
+      color: #d32f2f;
+    }
+    
+    #typingIndicator {
+      visibility: hidden;
+    }
+    
+    .tabs {
+      display: flex;
+      border-bottom: 1px solid #ccc;
+      margin-bottom: 15px;
+    }
+    
+    .tab {
+      padding: 8px 15px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      border-bottom: none;
+      border-radius: 4px 4px 0 0;
+      margin-right: 5px;
+    }
+    
+    .tab.active {
+      background-color: #f0f0f0;
+      border-color: #ccc;
+    }
+    
+    .tab-content {
+      display: none;
+    }
+    
+    .tab-content.active {
+      display: block;
     }
   </style>
 </head>
 <body>
   <h1>WebSocket Test Client</h1>
   
-  <div class="control-panel">
-    <button id="connectBtn">Connect</button>
-    <button id="disconnectBtn" disabled>Disconnect</button>
-    <span id="status">Disconnected</span>
+  <div class="tabs">
+    <div class="tab active" data-tab="chat">Chat</div>
+    <div class="tab" data-tab="settings">Settings</div>
   </div>
   
-  <div id="messages"></div>
+  <div id="chatTab" class="tab-content active">
+    <div class="control-panel">
+      <button id="connectBtn">Connect</button>
+      <button id="disconnectBtn" disabled>Disconnect</button>
+      <div>
+        <span class="status-indicator status-disconnected" id="statusIndicator"></span>
+        <span id="status">Disconnected</span>
+      </div>
+    </div>
+    
+    <div id="messages"></div>
+    
+    <div id="typingIndicator" class="typing-indicator">
+      <span></span><span></span><span></span> Someone is typing...
+    </div>
+    
+    <div style="display: flex; gap: 5px;">
+      <input 
+        type="text" 
+        id="messageInput" 
+        placeholder="Type a message..." 
+        disabled
+        style="flex-grow: 1;"
+      >
+      <select id="recipientInput" disabled>
+        <option value="">Broadcast</option>
+        <option value="2">User 2</option>
+        <option value="3">User 3</option>
+      </select>
+      <button id="sendBtn" disabled>Send</button>
+    </div>
+  </div>
   
-  <div>
-    <input type="text" id="messageInput" placeholder="Type a message..." disabled>
-    <input type="text" id="recipientInput" placeholder="Recipient ID (optional)" disabled>
-    <button id="sendBtn" disabled>Send</button>
+  <div id="settingsTab" class="tab-content">
+    <h2>Connection Settings</h2>
+    <div style="margin-bottom: 15px;">
+      <label for="userIdInput">Your User ID:</label>
+      <input type="number" id="userIdInput" value="1" min="1">
+    </div>
+    
+    <div style="margin-bottom: 15px;">
+      <label for="serverUrlInput">WebSocket Server URL:</label>
+      <input 
+        type="text" 
+        id="serverUrlInput" 
+        placeholder="Auto (uses current host)"
+        style="width: 300px;"
+      >
+    </div>
+    
+    <h2>Feature Testing</h2>
+    <div style="margin-bottom: 15px;">
+      <button id="testHeartbeatBtn" disabled>Test Heartbeat</button>
+      <button id="testTypingBtn" disabled>Send Typing Indicator</button>
+      <button id="testDeliveryBtn" disabled>Test Delivery Confirmation</button>
+    </div>
+    
+    <div style="margin-top: 30px;">
+      <button id="clearMessagesBtn">Clear Messages</button>
+    </div>
   </div>
 
   <script>
+    // DOM Elements
     const connectBtn = document.getElementById('connectBtn');
     const disconnectBtn = document.getElementById('disconnectBtn');
     const statusDisplay = document.getElementById('status');
+    const statusIndicator = document.getElementById('statusIndicator');
     const messagesContainer = document.getElementById('messages');
     const messageInput = document.getElementById('messageInput');
     const recipientInput = document.getElementById('recipientInput');
     const sendBtn = document.getElementById('sendBtn');
+    const userIdInput = document.getElementById('userIdInput');
+    const serverUrlInput = document.getElementById('serverUrlInput');
+    const testHeartbeatBtn = document.getElementById('testHeartbeatBtn');
+    const testTypingBtn = document.getElementById('testTypingBtn');
+    const testDeliveryBtn = document.getElementById('testDeliveryBtn');
+    const clearMessagesBtn = document.getElementById('clearMessagesBtn');
+    const typingIndicator = document.getElementById('typingIndicator');
+    const tabs = document.querySelectorAll('.tab');
+    const tabContents = document.querySelectorAll('.tab-content');
     
+    // State
     let socket = null;
-    let userId = 1; // For testing, simulate a logged-in user
+    let userId = parseInt(userIdInput.value, 10);
+    let heartbeatInterval = null;
+    let typingTimeout = null;
+    let pendingMessages = new Map(); // For tracking message delivery status
+    const usersTyping = new Set(); // Track typing users
     
-    function updateStatus(message, isConnected = false) {
+    // Update UI based on connection status
+    function updateStatus(message, status = 'disconnected') {
       statusDisplay.textContent = message;
+      
+      // Update status indicator color
+      statusIndicator.className = 'status-indicator';
+      statusIndicator.classList.add(`status-${status}`);
+      
+      // Update button states
+      const isConnected = status === 'connected';
       connectBtn.disabled = isConnected;
       disconnectBtn.disabled = !isConnected;
       messageInput.disabled = !isConnected;
       recipientInput.disabled = !isConnected;
       sendBtn.disabled = !isConnected;
+      testHeartbeatBtn.disabled = !isConnected;
+      testTypingBtn.disabled = !isConnected;
+      testDeliveryBtn.disabled = !isConnected;
     }
     
-    function addMessage(text, type = 'status') {
+    // Add a message to the chat container
+    function addMessage(text, type = 'status', metadata = {}) {
       const messageDiv = document.createElement('div');
       messageDiv.classList.add('message', type);
       messageDiv.textContent = text;
+      
+      // Add ID for tracking delivery status
+      if (metadata.id) {
+        messageDiv.id = `msg-${metadata.id}`;
+      }
+      
+      // Add delivery status indicators
+      if (metadata.status === 'delivered') {
+        messageDiv.classList.add('message-delivered');
+      } else if (metadata.status === 'read') {
+        messageDiv.classList.add('message-read');
+      } else if (metadata.status === 'failed') {
+        messageDiv.classList.add('message-failed');
+      }
+      
+      // Add timestamp if available
+      if (metadata.timestamp) {
+        const infoDiv = document.createElement('div');
+        infoDiv.classList.add('message-info');
+        infoDiv.textContent = formatTime(metadata.timestamp);
+        messageDiv.appendChild(infoDiv);
+      }
+      
       messagesContainer.appendChild(messageDiv);
       messagesContainer.scrollTop = messagesContainer.scrollHeight;
+      
+      return messageDiv;
     }
     
+    // Format timestamp to readable time
+    function formatTime(timestamp) {
+      const date = new Date(timestamp);
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+    
+    // Generate unique message ID
+    function generateMessageId() {
+      return `${Date.now()}-${Math.floor(Math.random() * 1000)}-${userId}`;
+    }
+    
+    // Show/hide typing indicator
+    function updateTypingIndicator() {
+      if (usersTyping.size > 0) {
+        const userList = Array.from(usersTyping).join(', ');
+        typingIndicator.textContent = `${userList} is typing...`;
+        typingIndicator.style.visibility = 'visible';
+      } else {
+        typingIndicator.style.visibility = 'hidden';
+      }
+    }
+    
+    // Send a heartbeat to keep the connection alive
+    function sendHeartbeat() {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({
+          type: 'heartbeat',
+          timestamp: Date.now()
+        }));
+      }
+    }
+    
+    // Send typing indicator
+    function sendTypingStatus(isTyping) {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        const recipientId = recipientInput.value.trim();
+        
+        socket.send(JSON.stringify({
+          type: isTyping ? 'typing' : 'typing_stop',
+          userId: userId,
+          recipientId: recipientId ? parseInt(recipientId, 10) : undefined,
+          timestamp: Date.now()
+        }));
+      }
+    }
+    
+    // Update message delivery status
+    function updateMessageStatus(messageId, status) {
+      const messageElement = document.getElementById(`msg-${messageId}`);
+      if (messageElement) {
+        // Remove any existing status classes
+        messageElement.classList.remove('message-delivered', 'message-read', 'message-failed');
+        
+        // Add the new status class
+        if (status === 'delivered') {
+          messageElement.classList.add('message-delivered');
+        } else if (status === 'read') {
+          messageElement.classList.add('message-read');
+        } else if (status === 'failed') {
+          messageElement.classList.add('message-failed');
+        }
+      }
+    }
+    
+    // Connect to WebSocket server
     connectBtn.addEventListener('click', () => {
-      // Create a WebSocket connection
-      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const wsUrl = `${protocol}//${window.location.host}/ws`;
+      // Update user ID from settings
+      userId = parseInt(userIdInput.value, 10);
+      
+      // Determine WebSocket URL
+      let wsUrl;
+      if (serverUrlInput.value.trim()) {
+        wsUrl = serverUrlInput.value.trim();
+      } else {
+        // Auto-generate based on current host
+        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        wsUrl = `${protocol}//${window.location.host}/ws`;
+      }
       
       try {
+        // Update status to connecting
+        updateStatus('Connecting...', 'connecting');
+        
+        // Create new WebSocket connection
         socket = new WebSocket(wsUrl);
         
+        // Connection opened handler
         socket.addEventListener('open', () => {
-          updateStatus('Connected', true);
+          updateStatus('Connected', 'connected');
           addMessage('Connection established');
+          
+          // Start heartbeat interval
+          heartbeatInterval = setInterval(sendHeartbeat, 30000);
           
           // Authenticate immediately after connecting
           const authMessage = {
@@ -114,6 +435,7 @@
           socket.send(JSON.stringify(authMessage));
         });
         
+        // Message handler
         socket.addEventListener('message', (event) => {
           try {
             const data = JSON.parse(event.data);
@@ -125,10 +447,68 @@
                 
               case 'chat_message':
                 let messageText = data.message;
+                let senderId;
+                
                 if (typeof data.message !== 'string' && data.message) {
-                  messageText = `From ${data.message.senderId}: ${data.message.content}`;
+                  senderId = data.message.senderId;
+                  messageText = data.message.content;
                 }
-                addMessage(messageText, 'received');
+                
+                addMessage(`${senderId ? `User ${senderId}: ` : ''}${messageText}`, 'received', {
+                  timestamp: data.timestamp || Date.now()
+                });
+                
+                // Send read receipt if applicable
+                if (data.messageId && senderId) {
+                  socket.send(JSON.stringify({
+                    type: 'message_read',
+                    messageId: data.messageId,
+                    userId: userId,
+                    timestamp: Date.now()
+                  }));
+                }
+                break;
+                
+              case 'message_delivered':
+                if (data.messageId) {
+                  updateMessageStatus(data.messageId, 'delivered');
+                  
+                  // Remove from pending messages
+                  pendingMessages.delete(data.messageId);
+                }
+                break;
+                
+              case 'message_read':
+                if (data.messageId) {
+                  updateMessageStatus(data.messageId, 'read');
+                }
+                break;
+                
+              case 'typing':
+                if (data.userId) {
+                  usersTyping.add(`User ${data.userId}`);
+                  updateTypingIndicator();
+                }
+                break;
+                
+              case 'typing_stop':
+                if (data.userId) {
+                  usersTyping.delete(`User ${data.userId}`);
+                  updateTypingIndicator();
+                }
+                break;
+                
+              case 'heartbeat':
+                // Respond to server heartbeat
+                socket.send(JSON.stringify({
+                  type: 'heartbeat_ack',
+                  timestamp: Date.now()
+                }));
+                break;
+                
+              case 'heartbeat_ack':
+                // Server acknowledged our heartbeat
+                addMessage('♥️ Heartbeat acknowledged', 'status');
                 break;
                 
               case 'error':
@@ -136,68 +516,203 @@
                 break;
                 
               default:
-                addMessage(`Received unknown message type: ${data.type}`, 'received');
+                addMessage(`Received message type: ${data.type}`, 'status');
             }
           } catch (error) {
             addMessage(`Error parsing message: ${error.message}`, 'status');
           }
         });
         
+        // Connection close handler
         socket.addEventListener('close', (event) => {
           updateStatus('Disconnected');
           addMessage(`Connection closed: ${event.code} ${event.reason}`);
           socket = null;
+          
+          // Clear heartbeat interval
+          if (heartbeatInterval) {
+            clearInterval(heartbeatInterval);
+            heartbeatInterval = null;
+          }
+          
+          // Clear typing users
+          usersTyping.clear();
+          updateTypingIndicator();
         });
         
+        // Error handler
         socket.addEventListener('error', () => {
-          updateStatus('Error occurred');
+          updateStatus('Error occurred', 'disconnected');
           addMessage('WebSocket error occurred');
         });
         
       } catch (error) {
+        updateStatus('Connection failed', 'disconnected');
         addMessage(`Failed to create WebSocket: ${error.message}`);
       }
     });
     
+    // Disconnect from server
     disconnectBtn.addEventListener('click', () => {
       if (socket) {
-        socket.close();
+        socket.close(1000, 'Client disconnected');
         socket = null;
         updateStatus('Disconnected');
         addMessage('Disconnected from server');
+        
+        // Clear intervals
+        if (heartbeatInterval) {
+          clearInterval(heartbeatInterval);
+          heartbeatInterval = null;
+        }
+        
+        // Clear typing users
+        usersTyping.clear();
+        updateTypingIndicator();
       }
     });
     
+    // Send a message
     sendBtn.addEventListener('click', () => {
       if (socket && socket.readyState === WebSocket.OPEN) {
         const message = messageInput.value.trim();
         const recipientId = recipientInput.value.trim();
         
         if (message) {
+          // Generate a unique ID for delivery tracking
+          const messageId = generateMessageId();
+          
           const payload = {
             type: 'chat_message',
+            messageId: messageId,
             senderId: userId,
-            message: message
+            message: message,
+            timestamp: Date.now()
           };
           
           if (recipientId) {
             payload.receiverId = parseInt(recipientId, 10);
           }
           
+          // Store for tracking delivery status
+          pendingMessages.set(messageId, {
+            status: 'sent',
+            timestamp: Date.now()
+          });
+          
           socket.send(JSON.stringify(payload));
-          addMessage(`You: ${message}`, 'sent');
+          
+          // Add to UI
+          addMessage(`You: ${message}`, 'sent', {
+            id: messageId,
+            timestamp: Date.now()
+          });
+          
           messageInput.value = '';
+          
+          // Clear typing indicator
+          sendTypingStatus(false);
         }
       } else {
         addMessage('Cannot send message: connection not open', 'status');
       }
     });
     
-    // Allow sending messages with Enter key
+    // Send messages with Enter key
     messageInput.addEventListener('keypress', (event) => {
       if (event.key === 'Enter') {
         sendBtn.click();
       }
+    });
+    
+    // Handle typing indicator
+    messageInput.addEventListener('input', () => {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        sendTypingStatus(true);
+        
+        // Clear any existing timeout
+        if (typingTimeout) {
+          clearTimeout(typingTimeout);
+        }
+        
+        // Set timeout to send typing stopped after 2 seconds of inactivity
+        typingTimeout = setTimeout(() => {
+          sendTypingStatus(false);
+          typingTimeout = null;
+        }, 2000);
+      }
+    });
+    
+    // Test buttons
+    testHeartbeatBtn.addEventListener('click', () => {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        sendHeartbeat();
+        addMessage('♥️ Sending heartbeat...', 'status');
+      }
+    });
+    
+    testTypingBtn.addEventListener('click', () => {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        sendTypingStatus(true);
+        addMessage('✏️ Sending typing indicator...', 'status');
+        
+        // Auto stop after 3 seconds
+        setTimeout(() => {
+          sendTypingStatus(false);
+          addMessage('✏️ Stopped typing indicator', 'status');
+        }, 3000);
+      }
+    });
+    
+    testDeliveryBtn.addEventListener('click', () => {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        const messageId = generateMessageId();
+        const recipientId = recipientInput.value.trim();
+        
+        if (!recipientId) {
+          addMessage('Please select a recipient to test delivery', 'status');
+          return;
+        }
+        
+        const payload = {
+          type: 'chat_message',
+          messageId: messageId,
+          senderId: userId,
+          receiverId: parseInt(recipientId, 10),
+          message: 'Test delivery confirmation',
+          timestamp: Date.now()
+        };
+        
+        socket.send(JSON.stringify(payload));
+        
+        addMessage('📧 Testing delivery confirmation...', 'status');
+        addMessage(`You: Test delivery confirmation`, 'sent', {
+          id: messageId,
+          timestamp: Date.now()
+        });
+      }
+    });
+    
+    // Clear messages
+    clearMessagesBtn.addEventListener('click', () => {
+      messagesContainer.innerHTML = '';
+      addMessage('Messages cleared', 'status');
+    });
+    
+    // Tab switching
+    tabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        // Get the tab's data-tab attribute
+        const tabId = tab.getAttribute('data-tab');
+        
+        // Remove active class from all tabs
+        tabs.forEach(t => t.classList.remove('active'));
+        tabContents.forEach(c => c.classList.remove('active'));
+        
+        // Add active class to clicked tab and corresponding content
+        tab.classList.add('active');
+        document.getElementById(`${tabId}Tab`).classList.add('active');
+      });
     });
   </script>
 </body>
