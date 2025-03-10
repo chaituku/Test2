@@ -13,7 +13,7 @@ import {
   insertPaymentSchema,
   insertChatMessageSchema,
   insertChatGroupSchema
-} from "@shared/schema";
+} from "../shared/schema";
 
 export function registerRoutes(app: Express): Server {
   // Set up authentication routes

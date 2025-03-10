@@ -1,16 +1,24 @@
 {
   "workflowsVersion": 0,
   "availableWorkflows": {
-    "Application": {
-      "command": "bash start-app.sh",
-      "runOnOpen": false
-    },
     "Start application": {
-      "command": "npm run dev",
+      "command": "node dev.js",
       "runOnOpen": false
     },
-    "Build client": {
+    "Start_BadmintonApp": {
+      "command": "bash start-server.sh",
+      "runOnOpen": false
+    },
+    "Start_Server": {
+      "command": "node --require esbuild-register server/index.ts",
+      "runOnOpen": false
+    },
+    "Build_Client": {
       "command": "npx vite build client",
+      "runOnOpen": false
+    },
+    "DB_Push": {
+      "command": "npx drizzle-kit push:pg",
       "runOnOpen": false
     }
   }

@@ -9,7 +9,7 @@ import {
   chatGroups, type ChatGroup, type InsertChatGroup,
   chatGroupMembers, type ChatGroupMember, type InsertChatGroupMember,
   chatMessages, type ChatMessage, type InsertChatMessage
-} from "@shared/schema";
+} from "../shared/schema";
 import type { SessionStore } from "express-session";
 import createMemoryStore from "memorystore";
 import session from "express-session";
