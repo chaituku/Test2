@@ -1,0 +1,15 @@
+{
+  "workflows": [
+    {
+      "name": "Start Application",
+      "restartOn": [
+        "package.json",
+        "server/**/*.ts",
+        "client/src/**/*.tsx",
+        "client/src/**/*.ts",
+        "shared/**/*.ts"
+      ],
+      "run": "./start-app.sh"
+    }
+  ]
+}
