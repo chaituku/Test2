@@ -1,2 +1,2 @@
 #!/bin/bash
-npx tsx server/index.ts
+node --require esbuild-register server/index.ts
