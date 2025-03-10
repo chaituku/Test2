@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebSocket Test Client</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    #messages {
+      height: 300px;
+      border: 1px solid #ccc;
+      margin-bottom: 20px;
+      padding: 10px;
+      overflow-y: auto;
+    }
+    input, button {
+      padding: 8px;
+      margin-right: 5px;
+    }
+    .message {
+      margin-bottom: 5px;
+      padding: 5px;
+      border-radius: 5px;
+    }
+    .sent {
+      background-color: #e3f2fd;
+      text-align: right;
+    }
+    .received {
+      background-color: #f1f1f1;
+    }
+    .status {
+      background-color: #f8f9fa;
+      text-align: center;
+      font-style: italic;
+    }
+    .control-panel {
+      display: flex;
+      margin-bottom: 10px;
+    }
+    .control-panel button {
+      margin-right: 5px;
+    }
+  </style>
+</head>
+<body>
+  <h1>WebSocket Test Client</h1>
+  
+  <div class="control-panel">
+    <button id="connectBtn">Connect</button>
+    <button id="disconnectBtn" disabled>Disconnect</button>
+    <span id="status">Disconnected</span>
+  </div>
+  
+  <div id="messages"></div>
+  
+  <div>
+    <input type="text" id="messageInput" placeholder="Type a message..." disabled>
+    <input type="text" id="recipientInput" placeholder="Recipient ID (optional)" disabled>
+    <button id="sendBtn" disabled>Send</button>
+  </div>
+
+  <script>
+    const connectBtn = document.getElementById('connectBtn');
+    const disconnectBtn = document.getElementById('disconnectBtn');
+    const statusDisplay = document.getElementById('status');
+    const messagesContainer = document.getElementById('messages');
+    const messageInput = document.getElementById('messageInput');
+    const recipientInput = document.getElementById('recipientInput');
+    const sendBtn = document.getElementById('sendBtn');
+    
+    let socket = null;
+    let userId = 1; // For testing, simulate a logged-in user
+    
+    function updateStatus(message, isConnected = false) {
+      statusDisplay.textContent = message;
+      connectBtn.disabled = isConnected;
+      disconnectBtn.disabled = !isConnected;
+      messageInput.disabled = !isConnected;
+      recipientInput.disabled = !isConnected;
+      sendBtn.disabled = !isConnected;
+    }
+    
+    function addMessage(text, type = 'status') {
+      const messageDiv = document.createElement('div');
+      messageDiv.classList.add('message', type);
+      messageDiv.textContent = text;
+      messagesContainer.appendChild(messageDiv);
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+    
+    connectBtn.addEventListener('click', () => {
+      // Create a WebSocket connection
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const wsUrl = `${protocol}//${window.location.host}/ws`;
+      
+      try {
+        socket = new WebSocket(wsUrl);
+        
+        socket.addEventListener('open', () => {
+          updateStatus('Connected', true);
+          addMessage('Connection established');
+          
+          // Authenticate immediately after connecting
+          const authMessage = {
+            type: 'auth',
+            userId: userId
+          };
+          socket.send(JSON.stringify(authMessage));
+        });
+        
+        socket.addEventListener('message', (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            
+            switch(data.type) {
+              case 'auth_success':
+                addMessage('Authentication successful');
+                break;
+                
+              case 'chat_message':
+                let messageText = data.message;
+                if (typeof data.message !== 'string' && data.message) {
+                  messageText = `From ${data.message.senderId}: ${data.message.content}`;
+                }
+                addMessage(messageText, 'received');
+                break;
+                
+              case 'error':
+                addMessage(`Error: ${data.message}`, 'status');
+                break;
+                
+              default:
+                addMessage(`Received unknown message type: ${data.type}`, 'received');
+            }
+          } catch (error) {
+            addMessage(`Error parsing message: ${error.message}`, 'status');
+          }
+        });
+        
+        socket.addEventListener('close', (event) => {
+          updateStatus('Disconnected');
+          addMessage(`Connection closed: ${event.code} ${event.reason}`);
+          socket = null;
+        });
+        
+        socket.addEventListener('error', () => {
+          updateStatus('Error occurred');
+          addMessage('WebSocket error occurred');
+        });
+        
+      } catch (error) {
+        addMessage(`Failed to create WebSocket: ${error.message}`);
+      }
+    });
+    
+    disconnectBtn.addEventListener('click', () => {
+      if (socket) {
+        socket.close();
+        socket = null;
+        updateStatus('Disconnected');
+        addMessage('Disconnected from server');
+      }
+    });
+    
+    sendBtn.addEventListener('click', () => {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        const message = messageInput.value.trim();
+        const recipientId = recipientInput.value.trim();
+        
+        if (message) {
+          const payload = {
+            type: 'chat_message',
+            senderId: userId,
+            message: message
+          };
+          
+          if (recipientId) {
+            payload.receiverId = parseInt(recipientId, 10);
+          }
+          
+          socket.send(JSON.stringify(payload));
+          addMessage(`You: ${message}`, 'sent');
+          messageInput.value = '';
+        }
+      } else {
+        addMessage('Cannot send message: connection not open', 'status');
+      }
+    });
+    
+    // Allow sending messages with Enter key
+    messageInput.addEventListener('keypress', (event) => {
+      if (event.key === 'Enter') {
+        sendBtn.click();
+      }
+    });
+  </script>
+</body>
+</html>
