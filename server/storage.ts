@@ -1,5 +1,6 @@
 import session from "express-session";
 import createMemoryStore from "memorystore";
+import connectPg from "connect-pg-simple";
 import { Store as SessionStore } from "express-session";
 import { 
   User, InsertUser, Business, InsertBusiness, Court, InsertCourt, 
@@ -7,8 +8,11 @@ import {
   InsertEventParticipant, Payment, InsertPayment, ChatGroup, 
   InsertChatGroup, ChatGroupMember, ChatMessage, InsertChatMessage 
 } from "@shared/schema";
+import pool from "./database";
+import config from "./config";
 
 const MemoryStore = createMemoryStore(session);
+const PostgresSessionStore = connectPg(session);
 
 // In-memory storage interface
 export interface IStorage {
@@ -385,4 +389,298 @@ export class MemStorage implements IStorage {
   }
 }
 
-export const storage = new MemStorage();
+// DatabaseStorage implementation for PostgreSQL
+export class DatabaseStorage implements IStorage {
+  sessionStore: SessionStore;
+  
+  constructor() {
+    this.sessionStore = new PostgresSessionStore({
+      pool,
+      tableName: 'session', // Name of table to create/use in PostgreSQL
+      createTableIfMissing: true,
+    });
+  }
+  
+  // User methods
+  async getUser(id: number): Promise<User | undefined> {
+    try {
+      const result = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
+      return result.rows[0] || undefined;
+    } catch (error) {
+      console.error('Error fetching user by ID:', error);
+      return undefined;
+    }
+  }
+  
+  async getUserByUsername(username: string): Promise<User | undefined> {
+    try {
+      const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+      return result.rows[0] || undefined;
+    } catch (error) {
+      console.error('Error fetching user by username:', error);
+      return undefined;
+    }
+  }
+  
+  async createUser(user: InsertUser): Promise<User> {
+    try {
+      const result = await pool.query(
+        'INSERT INTO users (username, password, role, email, firstName, lastName) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+        [user.username, user.password, user.role, user.email, user.firstName, user.lastName]
+      );
+      return result.rows[0];
+    } catch (error) {
+      console.error('Error creating user:', error);
+      throw error;
+    }
+  }
+  
+  // Business methods
+  async getBusiness(id: number): Promise<Business | undefined> {
+    try {
+      const result = await pool.query('SELECT * FROM businesses WHERE id = $1', [id]);
+      return result.rows[0] || undefined;
+    } catch (error) {
+      console.error('Error fetching business by ID:', error);
+      return undefined;
+    }
+  }
+  
+  async getBusinessesByOwner(ownerId: number): Promise<Business[]> {
+    try {
+      const result = await pool.query('SELECT * FROM businesses WHERE "ownerId" = $1', [ownerId]);
+      return result.rows;
+    } catch (error) {
+      console.error('Error fetching businesses by owner:', error);
+      return [];
+    }
+  }
+  
+  async createBusiness(business: InsertBusiness): Promise<Business> {
+    try {
+      const result = await pool.query(
+        'INSERT INTO businesses ("ownerId", name, description, address, phoneNumber, website, logoUrl) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+        [business.ownerId, business.name, business.description, business.address, business.phoneNumber, business.website, business.logoUrl]
+      );
+      return result.rows[0];
+    } catch (error) {
+      console.error('Error creating business:', error);
+      throw error;
+    }
+  }
+  
+  // Chat Message methods
+  async getChatMessages(groupId: number): Promise<ChatMessage[]> {
+    try {
+      const result = await pool.query(
+        'SELECT * FROM chat_messages WHERE "chatGroupId" = $1 ORDER BY "sentAt" ASC',
+        [groupId]
+      );
+      return result.rows;
+    } catch (error) {
+      console.error('Error fetching chat messages:', error);
+      return [];
+    }
+  }
+  
+  async getDirectMessages(userId: number, receiverId: number): Promise<ChatMessage[]> {
+    try {
+      const result = await pool.query(
+        `SELECT * FROM chat_messages 
+         WHERE ("senderId" = $1 AND "receiverId" = $2) 
+         OR ("senderId" = $2 AND "receiverId" = $1) 
+         ORDER BY "sentAt" ASC`,
+        [userId, receiverId]
+      );
+      return result.rows;
+    } catch (error) {
+      console.error('Error fetching direct messages:', error);
+      return [];
+    }
+  }
+  
+  async createChatMessage(message: InsertChatMessage): Promise<ChatMessage> {
+    try {
+      const result = await pool.query(
+        `INSERT INTO chat_messages 
+         ("senderId", "receiverId", "chatGroupId", content, "messageId") 
+         VALUES ($1, $2, $3, $4, $5) 
+         RETURNING *`,
+        [
+          message.senderId, 
+          message.receiverId, 
+          message.chatGroupId, 
+          message.content,
+          message.messageId
+        ]
+      );
+      return result.rows[0];
+    } catch (error) {
+      console.error('Error creating chat message:', error);
+      throw error;
+    }
+  }
+  
+  async markMessagesAsRead(userId: number, groupId?: number): Promise<void> {
+    try {
+      const now = new Date();
+      if (groupId) {
+        await pool.query(
+          `UPDATE chat_messages 
+           SET "readAt" = $1 
+           WHERE "chatGroupId" = $2 AND "receiverId" = $3 AND "readAt" IS NULL`,
+          [now, groupId, userId]
+        );
+      } else {
+        await pool.query(
+          `UPDATE chat_messages 
+           SET "readAt" = $1 
+           WHERE "receiverId" = $2 AND "readAt" IS NULL`,
+          [now, userId]
+        );
+      }
+    } catch (error) {
+      console.error('Error marking messages as read:', error);
+      throw error;
+    }
+  }
+  
+  // The rest of the methods from MemStorage would be implemented similarly
+  // We'll delegate to MemStorage for now and implement them as needed
+  async getCourt(id: number): Promise<Court | undefined> {
+    return memStorage.getCourt(id);
+  }
+  
+  async getCourtsByBusiness(businessId: number): Promise<Court[]> {
+    return memStorage.getCourtsByBusiness(businessId);
+  }
+  
+  async createCourt(court: InsertCourt): Promise<Court> {
+    return memStorage.createCourt(court);
+  }
+  
+  async updateCourtAvailability(id: number, isAvailable: boolean): Promise<Court | undefined> {
+    return memStorage.updateCourtAvailability(id, isAvailable);
+  }
+  
+  async getBooking(id: number): Promise<Booking | undefined> {
+    return memStorage.getBooking(id);
+  }
+  
+  async getBookingsByUser(userId: number): Promise<Booking[]> {
+    return memStorage.getBookingsByUser(userId);
+  }
+  
+  async getBookingsByCourt(courtId: number): Promise<Booking[]> {
+    return memStorage.getBookingsByCourt(courtId);
+  }
+  
+  async getBookingsByTimeRange(courtId: number, startTime: Date, endTime: Date): Promise<Booking[]> {
+    return memStorage.getBookingsByTimeRange(courtId, startTime, endTime);
+  }
+  
+  async createBooking(booking: InsertBooking): Promise<Booking> {
+    return memStorage.createBooking(booking);
+  }
+  
+  async getEvent(id: number): Promise<Event | undefined> {
+    return memStorage.getEvent(id);
+  }
+  
+  async getEventsByOrganizer(organizerId: number): Promise<Event[]> {
+    return memStorage.getEventsByOrganizer(organizerId);
+  }
+  
+  async getEventsByType(eventType: string): Promise<Event[]> {
+    return memStorage.getEventsByType(eventType);
+  }
+  
+  async getUpcomingEvents(): Promise<Event[]> {
+    return memStorage.getUpcomingEvents();
+  }
+  
+  async createEvent(event: InsertEvent): Promise<Event> {
+    return memStorage.createEvent(event);
+  }
+  
+  async updateEventStatus(id: number, status: string): Promise<Event | undefined> {
+    return memStorage.updateEventStatus(id, status);
+  }
+  
+  async updateEventParticipantCount(id: number, count: number): Promise<Event | undefined> {
+    return memStorage.updateEventParticipantCount(id, count);
+  }
+  
+  async getEventParticipant(id: number): Promise<EventParticipant | undefined> {
+    return memStorage.getEventParticipant(id);
+  }
+  
+  async getEventParticipantsByEvent(eventId: number): Promise<EventParticipant[]> {
+    return memStorage.getEventParticipantsByEvent(eventId);
+  }
+  
+  async getEventParticipantsByUser(userId: number): Promise<EventParticipant[]> {
+    return memStorage.getEventParticipantsByUser(userId);
+  }
+  
+  async createEventParticipant(participant: InsertEventParticipant): Promise<EventParticipant> {
+    return memStorage.createEventParticipant(participant);
+  }
+  
+  async updateEventParticipantStatus(id: number, status: string, paymentStatus: string): Promise<EventParticipant | undefined> {
+    return memStorage.updateEventParticipantStatus(id, status, paymentStatus);
+  }
+  
+  async getPayment(id: number): Promise<Payment | undefined> {
+    return memStorage.getPayment(id);
+  }
+  
+  async getPaymentsByUser(userId: number): Promise<Payment[]> {
+    return memStorage.getPaymentsByUser(userId);
+  }
+  
+  async getPaymentsByEvent(eventId: number): Promise<Payment[]> {
+    return memStorage.getPaymentsByEvent(eventId);
+  }
+  
+  async createPayment(payment: InsertPayment): Promise<Payment> {
+    return memStorage.createPayment(payment);
+  }
+  
+  async updatePaymentStatus(id: number, status: string): Promise<Payment | undefined> {
+    return memStorage.updatePaymentStatus(id, status);
+  }
+  
+  async getChatGroup(id: number): Promise<ChatGroup | undefined> {
+    return memStorage.getChatGroup(id);
+  }
+  
+  async getChatGroupsByEvent(eventId: number): Promise<ChatGroup[]> {
+    return memStorage.getChatGroupsByEvent(eventId);
+  }
+  
+  async getChatGroupsByBusiness(businessId: number): Promise<ChatGroup[]> {
+    return memStorage.getChatGroupsByBusiness(businessId);
+  }
+  
+  async getChatGroupsByUser(userId: number): Promise<ChatGroup[]> {
+    return memStorage.getChatGroupsByUser(userId);
+  }
+  
+  async createChatGroup(group: InsertChatGroup): Promise<ChatGroup> {
+    return memStorage.createChatGroup(group);
+  }
+  
+  async addUserToChatGroup(userId: number, groupId: number): Promise<ChatGroupMember> {
+    return memStorage.addUserToChatGroup(userId, groupId);
+  }
+}
+
+// Create the memory storage instance for fallback and initial use
+const memStorage = new MemStorage();
+
+// Choose which storage implementation to use based on configuration
+// Using MemStorage for now, but can switch to DatabaseStorage when needed
+export const storage = config.nodeEnv === 'production' ? 
+  new DatabaseStorage() : 
+  memStorage;
