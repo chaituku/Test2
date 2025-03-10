@@ -1,6 +1,6 @@
 import { Pool } from 'pg';
 import config from './config';
-import { roleEnum, eventTypeEnum } from '@shared/schema';
+import { roleEnum, eventTypeEnum } from '../shared/schema';
 
 /**
  * Schema utility functions for multi-tenant database operations

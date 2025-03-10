@@ -1,22 +1,22 @@
 import React, { useState } from "react";
-import { useAuth } from "@/hooks/use-auth";
+import { useAuth } from "../hooks/use-auth";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Business, Court, InsertCourt } from "@shared/schema";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Business, Court, InsertCourt } from "../../shared/schema";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
 import { Volleyball, LogOut, Plus, Settings, Calendar, AlertCircle, CheckCircle2 } from "lucide-react";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "../components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "../components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
+import { useToast } from "../hooks/use-toast";
+import { apiRequest, queryClient } from "../lib/queryClient";
 import { useLocation, Link } from "wouter";
-import { Badge } from "@/components/ui/badge";
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Badge } from "../components/ui/badge";
+import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "../components/ui/form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
-import { Switch } from "@/components/ui/switch";
+import { Switch } from "../components/ui/switch";
 import { 
   Table, 
   TableBody, 
@@ -25,7 +25,7 @@ import {
   TableHead, 
   TableHeader, 
   TableRow 
-} from "@/components/ui/table";
+} from "../components/ui/table";
 import { format } from "date-fns";
 
 const courtSchema = z.object({

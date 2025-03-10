@@ -1,8 +1,8 @@
 import React, { useState } from "react";
-import { useAuth } from "@/hooks/use-auth";
+import { useAuth } from "../hooks/use-auth";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Business, Court, Booking, InsertBooking } from "@shared/schema";
-import { Button } from "@/components/ui/button";
+import { Business, Court, Booking, InsertBooking } from "../../shared/schema";
+import { Button } from "../components/ui/button";
 import { 
   Calendar, 
   LogOut, 
@@ -19,7 +19,7 @@ import {
   CreditCard,
   Filter
 } from "lucide-react";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "../components/ui/card";
 import { 
   Dialog, 
   DialogContent, 
@@ -28,14 +28,14 @@ import {
   DialogHeader, 
   DialogTitle,
   DialogTrigger 
-} from "@/components/ui/dialog";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+} from "../components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
+import { useToast } from "../hooks/use-toast";
+import { apiRequest, queryClient } from "../lib/queryClient";
 import { format, addMinutes, isSameDay, isWithinInterval, startOfDay, endOfDay } from "date-fns";
-import { Calendar as CalendarComponent } from "@/components/ui/calendar";
-import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
+import { Calendar as CalendarComponent } from "../components/ui/calendar";
+import { Badge } from "../components/ui/badge";
+import { Input } from "../components/ui/input";
 import { Link, useLocation } from "wouter";
 import {
   Sheet,
@@ -44,7 +44,7 @@ import {
   SheetHeader,
   SheetTitle,
   SheetTrigger,
-} from "@/components/ui/sheet";
+} from "../components/ui/sheet";
 import {
   Table,
   TableBody,
@@ -53,7 +53,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@/components/ui/table";
+} from "../components/ui/table";
 
 export default function HomePage() {
   const { user, logoutMutation } = useAuth();

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useWebSocket } from '@/hooks/use-websocket';
-import { useAuth } from '@/hooks/use-auth';
+import { useWebSocket } from '../hooks/use-websocket';
+import { useAuth } from '../hooks/use-auth';
 import { useQuery } from '@tanstack/react-query';
 import { ChatGroup, ChatMessage, User } from '@shared/schema';
 import { format } from 'date-fns';
@@ -13,14 +13,14 @@ import {
   CardFooter,
   CardHeader,
   CardTitle,
-} from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { useToast } from '@/hooks/use-toast';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { Separator } from '@/components/ui/separator';
-import { Badge } from '@/components/ui/badge';
+} from '../components/ui/card';
+import { Button } from '../components/ui/button';
+import { Input } from '../components/ui/input';
+import { useToast } from '../hooks/use-toast';
+import { ScrollArea } from '../components/ui/scroll-area';
+import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
+import { Separator } from '../components/ui/separator';
+import { Badge } from '../components/ui/badge';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -28,7 +28,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
+} from '../components/ui/dropdown-menu';
 import {
   Dialog,
   DialogContent,
@@ -37,13 +37,13 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/dialog';
+} from '../components/ui/dialog';
 import {
   Tabs,
   TabsContent,
   TabsList,
   TabsTrigger,
-} from '@/components/ui/tabs';
+} from '../components/ui/tabs';
 
 // This component displays the chat interface
 export default function ChatPage() {

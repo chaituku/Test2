@@ -7,7 +7,7 @@ import {
   Booking, InsertBooking, Event, InsertEvent, EventParticipant, 
   InsertEventParticipant, Payment, InsertPayment, ChatGroup, 
   InsertChatGroup, ChatGroupMember, ChatMessage, InsertChatMessage 
-} from "@shared/schema";
+} from "../shared/schema";
 import { pool, getClient, releaseClient, withTransaction } from "./db";
 import config from "./config";
 import { 
@@ -835,6 +835,442 @@ export class DatabaseStorage implements IStorage {
         throw error;
       }
     });
+  }
+}
+
+// In-memory implementation for development and testing
+export class MemStorage implements IStorage {
+  private users: Map<number, User> = new Map();
+  private businesses: Map<number, Business> = new Map();
+  private courts: Map<number, Court> = new Map();
+  private bookings: Map<number, Booking> = new Map();
+  private events: Map<number, Event> = new Map();
+  private eventParticipants: Map<number, EventParticipant> = new Map();
+  private payments: Map<number, Payment> = new Map();
+  private chatGroups: Map<number, ChatGroup> = new Map();
+  private chatGroupMembers: Map<number, ChatGroupMember> = new Map();
+  private chatMessages: Map<number, ChatMessage> = new Map();
+  sessionStore: SessionStore;
+  
+  private userId = 1;
+  private businessId = 1;
+  private courtId = 1;
+  private bookingId = 1;
+  private eventId = 1;
+  private eventParticipantId = 1;
+  private paymentId = 1;
+  private chatGroupId = 1;
+  private chatGroupMemberId = 1;
+  private chatMessageId = 1;
+  
+  constructor() {
+    this.sessionStore = new MemoryStore({
+      checkPeriod: 86400000, // 1 day
+    });
+  }
+  
+  // User methods
+  async getUser(id: number): Promise<User | undefined> {
+    return this.users.get(id);
+  }
+  
+  async getUserByUsername(username: string): Promise<User | undefined> {
+    return Array.from(this.users.values()).find(user => user.username === username);
+  }
+  
+  async createUser(user: InsertUser): Promise<User> {
+    const id = this.userId++;
+    const newUser: User = {
+      id,
+      username: user.username,
+      password: user.password,
+      email: user.email,
+      fullName: user.fullName,
+      phone: user.phone ?? null,
+      role: user.role ?? 'user',
+      createdAt: new Date()
+    };
+    this.users.set(id, newUser);
+    return newUser;
+  }
+  
+  // Business methods
+  async getBusiness(id: number): Promise<Business | undefined> {
+    return this.businesses.get(id);
+  }
+  
+  async getBusinessesByOwner(ownerId: number): Promise<Business[]> {
+    return Array.from(this.businesses.values()).filter(business => business.ownerId === ownerId);
+  }
+  
+  async createBusiness(business: InsertBusiness): Promise<Business> {
+    const id = this.businessId++;
+    const newBusiness: Business = {
+      id,
+      name: business.name,
+      description: business.description ?? null,
+      ownerId: business.ownerId,
+      address: business.address,
+      phone: business.phone,
+      email: business.email,
+      website: business.website ?? null,
+      createdAt: new Date()
+    };
+    this.businesses.set(id, newBusiness);
+    return newBusiness;
+  }
+  
+  // Court methods
+  async getCourt(id: number, businessId: number): Promise<Court | undefined> {
+    const court = this.courts.get(id);
+    return court && court.businessId === businessId ? court : undefined;
+  }
+  
+  async getCourtsByBusiness(businessId: number): Promise<Court[]> {
+    return Array.from(this.courts.values()).filter(court => court.businessId === businessId);
+  }
+  
+  async createCourt(court: InsertCourt, businessId: number): Promise<Court> {
+    const id = this.courtId++;
+    const newCourt: Court = {
+      id,
+      businessId: court.businessId ?? businessId,
+      name: court.name,
+      description: court.description ?? null,
+      pricePerHour: court.pricePerHour,
+      isAvailable: court.isAvailable ?? true,
+      createdAt: new Date()
+    };
+    this.courts.set(id, newCourt);
+    return newCourt;
+  }
+  
+  async updateCourtAvailability(id: number, businessId: number, isAvailable: boolean): Promise<Court | undefined> {
+    const court = await this.getCourt(id, businessId);
+    if (!court) return undefined;
+    
+    const updatedCourt: Court = {
+      ...court,
+      isAvailable
+    };
+    this.courts.set(id, updatedCourt);
+    return updatedCourt;
+  }
+  
+  // Booking methods
+  async getBooking(id: number, businessId: number): Promise<Booking | undefined> {
+    const booking = this.bookings.get(id);
+    if (!booking) return undefined;
+    
+    const court = await this.getCourt(booking.courtId, businessId);
+    return court ? booking : undefined;
+  }
+  
+  async getBookingsByUser(userId: number): Promise<Booking[]> {
+    return Array.from(this.bookings.values()).filter(booking => booking.userId === userId);
+  }
+  
+  async getBookingsByCourt(courtId: number, businessId: number): Promise<Booking[]> {
+    const court = await this.getCourt(courtId, businessId);
+    if (!court) return [];
+    
+    return Array.from(this.bookings.values()).filter(booking => booking.courtId === courtId);
+  }
+  
+  async getBookingsByTimeRange(courtId: number, businessId: number, startTime: Date, endTime: Date): Promise<Booking[]> {
+    const court = await this.getCourt(courtId, businessId);
+    if (!court) return [];
+    
+    return Array.from(this.bookings.values()).filter(booking => {
+      return booking.courtId === courtId && 
+        ((booking.startTime >= startTime && booking.startTime < endTime) || 
+        (booking.endTime > startTime && booking.endTime <= endTime));
+    });
+  }
+  
+  async createBooking(booking: InsertBooking, businessId: number): Promise<Booking> {
+    const id = this.bookingId++;
+    const newBooking: Booking = {
+      id,
+      courtId: booking.courtId,
+      userId: booking.userId,
+      startTime: booking.startTime,
+      endTime: booking.endTime,
+      status: booking.status ?? 'confirmed',
+      createdAt: new Date()
+    };
+    this.bookings.set(id, newBooking);
+    return newBooking;
+  }
+  
+  // Event methods
+  async getEvent(id: number): Promise<Event | undefined> {
+    return this.events.get(id);
+  }
+  
+  async getEventsByOrganizer(organizerId: number): Promise<Event[]> {
+    return Array.from(this.events.values()).filter(event => event.organizerId === organizerId);
+  }
+  
+  async getEventsByType(eventType: string): Promise<Event[]> {
+    return Array.from(this.events.values()).filter(event => event.eventType === eventType);
+  }
+  
+  async getUpcomingEvents(): Promise<Event[]> {
+    const now = new Date();
+    return Array.from(this.events.values()).filter(event => event.startTime > now);
+  }
+  
+  async createEvent(event: InsertEvent): Promise<Event> {
+    const id = this.eventId++;
+    const newEvent: Event = {
+      id,
+      name: event.name,
+      description: event.description ?? null,
+      eventType: event.eventType,
+      organizerId: event.organizerId,
+      startTime: event.startTime,
+      endTime: event.endTime,
+      location: event.location,
+      maxParticipants: event.maxParticipants ?? null,
+      currentParticipants: event.currentParticipants ?? 0,
+      price: event.price ?? null,
+      status: event.status ?? 'open',
+      createdAt: new Date()
+    };
+    this.events.set(id, newEvent);
+    return newEvent;
+  }
+  
+  async updateEventStatus(id: number, status: string): Promise<Event | undefined> {
+    const event = this.events.get(id);
+    if (!event) return undefined;
+    
+    const updatedEvent: Event = {
+      ...event,
+      status
+    };
+    this.events.set(id, updatedEvent);
+    return updatedEvent;
+  }
+  
+  async updateEventParticipantCount(id: number, count: number): Promise<Event | undefined> {
+    const event = this.events.get(id);
+    if (!event) return undefined;
+    
+    const updatedEvent: Event = {
+      ...event,
+      currentParticipants: count
+    };
+    this.events.set(id, updatedEvent);
+    return updatedEvent;
+  }
+  
+  // Event Participants methods
+  async getEventParticipant(id: number): Promise<EventParticipant | undefined> {
+    return this.eventParticipants.get(id);
+  }
+  
+  async getEventParticipantsByEvent(eventId: number): Promise<EventParticipant[]> {
+    return Array.from(this.eventParticipants.values()).filter(participant => participant.eventId === eventId);
+  }
+  
+  async getEventParticipantsByUser(userId: number): Promise<EventParticipant[]> {
+    return Array.from(this.eventParticipants.values()).filter(participant => participant.userId === userId);
+  }
+  
+  async createEventParticipant(participant: InsertEventParticipant): Promise<EventParticipant> {
+    const id = this.eventParticipantId++;
+    const newParticipant: EventParticipant = {
+      id,
+      eventId: participant.eventId,
+      userId: participant.userId,
+      status: participant.status ?? 'registered',
+      paymentStatus: participant.paymentStatus ?? 'pending',
+      createdAt: new Date()
+    };
+    this.eventParticipants.set(id, newParticipant);
+    
+    // Update event participant count
+    const event = this.events.get(participant.eventId);
+    if (event) {
+      this.updateEventParticipantCount(event.id, (event.currentParticipants ?? 0) + 1);
+    }
+    
+    return newParticipant;
+  }
+  
+  async updateEventParticipantStatus(id: number, status: string, paymentStatus: string): Promise<EventParticipant | undefined> {
+    const participant = this.eventParticipants.get(id);
+    if (!participant) return undefined;
+    
+    const updatedParticipant: EventParticipant = {
+      ...participant,
+      status,
+      paymentStatus
+    };
+    this.eventParticipants.set(id, updatedParticipant);
+    return updatedParticipant;
+  }
+  
+  // Payment methods
+  async getPayment(id: number): Promise<Payment | undefined> {
+    return this.payments.get(id);
+  }
+  
+  async getPaymentsByUser(userId: number): Promise<Payment[]> {
+    return Array.from(this.payments.values()).filter(payment => payment.userId === userId);
+  }
+  
+  async getPaymentsByEvent(eventId: number): Promise<Payment[]> {
+    return Array.from(this.payments.values()).filter(payment => payment.eventId === eventId);
+  }
+  
+  async createPayment(payment: InsertPayment): Promise<Payment> {
+    const id = this.paymentId++;
+    const newPayment: Payment = {
+      id,
+      userId: payment.userId,
+      eventId: payment.eventId ?? null,
+      amount: payment.amount,
+      paymentMethod: payment.paymentMethod,
+      status: payment.status ?? 'pending',
+      transactionId: payment.transactionId ?? null,
+      createdAt: new Date()
+    };
+    this.payments.set(id, newPayment);
+    return newPayment;
+  }
+  
+  async updatePaymentStatus(id: number, status: string): Promise<Payment | undefined> {
+    const payment = this.payments.get(id);
+    if (!payment) return undefined;
+    
+    const updatedPayment: Payment = {
+      ...payment,
+      status
+    };
+    this.payments.set(id, updatedPayment);
+    return updatedPayment;
+  }
+  
+  // Chat methods
+  async getChatGroup(id: number): Promise<ChatGroup | undefined> {
+    return this.chatGroups.get(id);
+  }
+  
+  async getChatGroupsByEvent(eventId: number): Promise<ChatGroup[]> {
+    return Array.from(this.chatGroups.values()).filter(group => group.eventId === eventId);
+  }
+  
+  async getChatGroupsByBusiness(businessId: number): Promise<ChatGroup[]> {
+    return Array.from(this.chatGroups.values()).filter(group => group.businessId === businessId);
+  }
+  
+  async getChatGroupsByUser(userId: number): Promise<ChatGroup[]> {
+    const memberGroups = Array.from(this.chatGroupMembers.values())
+      .filter(member => member.userId === userId)
+      .map(member => member.groupId);
+    
+    return Array.from(this.chatGroups.values())
+      .filter(group => memberGroups.includes(group.id));
+  }
+  
+  async createChatGroup(group: InsertChatGroup): Promise<ChatGroup> {
+    const id = this.chatGroupId++;
+    const newGroup: ChatGroup = {
+      id,
+      name: group.name,
+      description: group.description ?? null,
+      eventId: group.eventId ?? null,
+      businessId: group.businessId ?? null,
+      isDirect: group.isDirect ?? false,
+      createdAt: new Date()
+    };
+    this.chatGroups.set(id, newGroup);
+    return newGroup;
+  }
+  
+  async addUserToChatGroup(userId: number, groupId: number): Promise<ChatGroupMember> {
+    const id = this.chatGroupMemberId++;
+    const newMember: ChatGroupMember = {
+      id,
+      groupId,
+      userId,
+      joinedAt: new Date()
+    };
+    this.chatGroupMembers.set(id, newMember);
+    return newMember;
+  }
+  
+  // Chat Message methods
+  async getChatMessages(groupId: number): Promise<ChatMessage[]> {
+    return Array.from(this.chatMessages.values())
+      .filter(message => message.groupId === groupId)
+      .sort((a, b) => a.sentAt.getTime() - b.sentAt.getTime());
+  }
+  
+  async getDirectMessages(userId: number, receiverId: number): Promise<ChatMessage[]> {
+    // Find direct chat groups between these users
+    const directGroups = Array.from(this.chatGroups.values())
+      .filter(group => group.isDirect)
+      .filter(group => {
+        const members = Array.from(this.chatGroupMembers.values())
+          .filter(member => member.groupId === group.id)
+          .map(member => member.userId);
+        
+        return members.includes(userId) && members.includes(receiverId) && members.length === 2;
+      })
+      .map(group => group.id);
+    
+    if (directGroups.length === 0) return [];
+    
+    return Array.from(this.chatMessages.values())
+      .filter(message => directGroups.includes(message.groupId))
+      .sort((a, b) => a.sentAt.getTime() - b.sentAt.getTime());
+  }
+  
+  async createChatMessage(message: InsertChatMessage): Promise<ChatMessage> {
+    const id = this.chatMessageId++;
+    const newMessage: ChatMessage = {
+      id,
+      groupId: message.groupId,
+      senderId: message.senderId,
+      message: message.message,
+      sentAt: new Date(),
+      readAt: null,
+      messageType: message.messageType ?? 'text'
+    };
+    this.chatMessages.set(id, newMessage);
+    return newMessage;
+  }
+  
+  async markMessagesAsRead(userId: number, groupId?: number): Promise<void> {
+    const now = new Date();
+    const messages = Array.from(this.chatMessages.values())
+      .filter(message => {
+        // Filter messages not sent by this user and not already read
+        if (message.senderId === userId || message.readAt !== null) return false;
+        
+        // If groupId is specified, only include messages from that group
+        if (groupId !== undefined) return message.groupId === groupId;
+        
+        // Otherwise include messages from any group this user is a member of
+        const userGroups = Array.from(this.chatGroupMembers.values())
+          .filter(member => member.userId === userId)
+          .map(member => member.groupId);
+        
+        return userGroups.includes(message.groupId);
+      });
+    
+    // Mark all filtered messages as read
+    for (const message of messages) {
+      const updatedMessage: ChatMessage = {
+        ...message,
+        readAt: now
+      };
+      this.chatMessages.set(message.id, updatedMessage);
+    }
   }
 }
 

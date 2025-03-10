@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { webSocketService, MessageType } from '@/lib/websocket';
-import { useAuth } from '@/hooks/use-auth';
-import { ChatMessage } from '@shared/schema';
+import { webSocketService, MessageType } from '../lib/websocket';
+import { useAuth } from './use-auth';
+import { ChatMessage } from '../../shared/schema';
 
 export type WebSocketConnectionState = 'connecting' | 'connected' | 'disconnected' | 'error';
 

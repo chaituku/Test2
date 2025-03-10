@@ -1,4 +1,4 @@
-import { ChatMessage } from "@shared/schema";
+import { ChatMessage } from "../../shared/schema";
 
 // Define message types
 export type MessageType = 

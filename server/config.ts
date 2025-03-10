@@ -45,11 +45,11 @@ const config: AppConfig = {
   log_level: (process.env.LOG_LEVEL as 'debug' | 'info' | 'warn' | 'error') || 'info',
   
   database: {
-    host: process.env.DB_HOST || 'localhost',
-    port: parseInt(process.env.DB_PORT || '5432', 10),
-    database: process.env.DB_NAME || 'badminton_app',
-    user: process.env.DB_USER || 'postgres',
-    password: process.env.DB_PASSWORD || 'postgres',
+    host: process.env.PGHOST || process.env.DB_HOST || 'localhost',
+    port: parseInt(process.env.PGPORT || process.env.DB_PORT || '5432', 10),
+    database: process.env.PGDATABASE || process.env.DB_NAME || 'badminton_app',
+    user: process.env.PGUSER || process.env.DB_USER || 'postgres',
+    password: process.env.PGPASSWORD || process.env.DB_PASSWORD || 'postgres',
     ssl: process.env.DB_SSL === 'true',
     max_connections: parseInt(process.env.DB_MAX_CONNECTIONS || '10', 10),
     idle_timeout: parseInt(process.env.DB_IDLE_TIMEOUT || '30000', 10),

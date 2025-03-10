@@ -1,7 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import * as ws from "ws";
-const { WebSocket, WebSocketServer } = ws;
+import { WebSocket, WebSocketServer } from "ws";
 import { setupAuth } from "./auth";
 import { storage } from "./storage";
 import crypto from "crypto";
@@ -804,7 +803,8 @@ export function registerRoutes(app: Express): Server {
           if (connection === ws) {
             activeConnections.delete(userId);
             console.log(`User ${userId} disconnected from WebSocket`);
-          break;
+            break;
+          }
         }
       }
     });
