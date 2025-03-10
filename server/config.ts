@@ -52,7 +52,9 @@ const config: AppConfig = {
     password: process.env.DB_PASSWORD || 'postgres',
     ssl: process.env.DB_SSL === 'true',
     max_connections: parseInt(process.env.DB_MAX_CONNECTIONS || '10', 10),
-    idle_timeout: parseInt(process.env.DB_IDLE_TIMEOUT || '30000', 10)
+    idle_timeout: parseInt(process.env.DB_IDLE_TIMEOUT || '30000', 10),
+    master_schema: process.env.DB_MASTER_SCHEMA || 'master',
+    tenant_schema_prefix: process.env.DB_TENANT_SCHEMA_PREFIX || 'tenant_'
   },
   
   auth: {

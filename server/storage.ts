@@ -8,8 +8,14 @@ import {
   InsertEventParticipant, Payment, InsertPayment, ChatGroup, 
   InsertChatGroup, ChatGroupMember, ChatMessage, InsertChatMessage 
 } from "@shared/schema";
-import pool from "./database";
+import { pool, getClient, releaseClient, withTransaction } from "./db";
 import config from "./config";
+import { 
+  getMasterSchemaName, 
+  getTenantSchemaName, 
+  setSearchPath, 
+  resetSearchPath 
+} from "./schema-utils";
 
 const MemoryStore = createMemoryStore(session);
 const PostgresSessionStore = connectPg(session);
@@ -27,17 +33,17 @@ export interface IStorage {
   createBusiness(business: InsertBusiness): Promise<Business>;
   
   // Court methods
-  getCourt(id: number): Promise<Court | undefined>;
+  getCourt(id: number, businessId: number): Promise<Court | undefined>;
   getCourtsByBusiness(businessId: number): Promise<Court[]>;
-  createCourt(court: InsertCourt): Promise<Court>;
-  updateCourtAvailability(id: number, isAvailable: boolean): Promise<Court | undefined>;
+  createCourt(court: InsertCourt, businessId: number): Promise<Court>;
+  updateCourtAvailability(id: number, businessId: number, isAvailable: boolean): Promise<Court | undefined>;
   
   // Booking methods
-  getBooking(id: number): Promise<Booking | undefined>;
+  getBooking(id: number, businessId: number): Promise<Booking | undefined>;
   getBookingsByUser(userId: number): Promise<Booking[]>;
-  getBookingsByCourt(courtId: number): Promise<Booking[]>;
-  getBookingsByTimeRange(courtId: number, startTime: Date, endTime: Date): Promise<Booking[]>;
-  createBooking(booking: InsertBooking): Promise<Booking>;
+  getBookingsByCourt(courtId: number, businessId: number): Promise<Booking[]>;
+  getBookingsByTimeRange(courtId: number, businessId: number, startTime: Date, endTime: Date): Promise<Booking[]>;
+  createBooking(booking: InsertBooking, businessId: number): Promise<Booking>;
   
   // Event methods
   getEvent(id: number): Promise<Event | undefined>;
@@ -80,316 +86,7 @@ export interface IStorage {
   sessionStore: SessionStore;
 }
 
-// In-memory storage implementation
-export class MemStorage implements IStorage {
-  private users: User[] = [];
-  private businesses: Business[] = [];
-  private courts: Court[] = [];
-  private bookings: Booking[] = [];
-  private events: Event[] = [];
-  private eventParticipants: EventParticipant[] = [];
-  private payments: Payment[] = [];
-  private chatGroups: ChatGroup[] = [];
-  private chatGroupMembers: ChatGroupMember[] = [];
-  private chatMessages: ChatMessage[] = [];
-  
-  sessionStore: SessionStore;
-  
-  constructor() {
-    this.sessionStore = new MemoryStore({
-      checkPeriod: 86400000, // prune expired entries every 24h
-    });
-  }
-  
-  // User methods
-  async getUser(id: number): Promise<User | undefined> {
-    return this.users.find(user => user.id === id);
-  }
-  
-  async getUserByUsername(username: string): Promise<User | undefined> {
-    return this.users.find(user => user.username === username);
-  }
-  
-  async createUser(user: InsertUser): Promise<User> {
-    const newUser: User = {
-      id: this.users.length + 1,
-      ...user,
-      createdAt: new Date(),
-    };
-    this.users.push(newUser);
-    return newUser;
-  }
-  
-  // Business methods
-  async getBusiness(id: number): Promise<Business | undefined> {
-    return this.businesses.find(business => business.id === id);
-  }
-  
-  async getBusinessesByOwner(ownerId: number): Promise<Business[]> {
-    return this.businesses.filter(business => business.ownerId === ownerId);
-  }
-  
-  async createBusiness(business: InsertBusiness): Promise<Business> {
-    const newBusiness: Business = {
-      id: this.businesses.length + 1,
-      ...business,
-      createdAt: new Date(),
-    };
-    this.businesses.push(newBusiness);
-    return newBusiness;
-  }
-  
-  // Court methods
-  async getCourt(id: number): Promise<Court | undefined> {
-    return this.courts.find(court => court.id === id);
-  }
-  
-  async getCourtsByBusiness(businessId: number): Promise<Court[]> {
-    return this.courts.filter(court => court.businessId === businessId);
-  }
-  
-  async createCourt(court: InsertCourt): Promise<Court> {
-    const newCourt: Court = {
-      id: this.courts.length + 1,
-      ...court,
-      createdAt: new Date(),
-    };
-    this.courts.push(newCourt);
-    return newCourt;
-  }
-  
-  async updateCourtAvailability(id: number, isAvailable: boolean): Promise<Court | undefined> {
-    const court = await this.getCourt(id);
-    if (!court) return undefined;
-    
-    court.isAvailable = isAvailable;
-    return court;
-  }
-  
-  // Booking methods
-  async getBooking(id: number): Promise<Booking | undefined> {
-    return this.bookings.find(booking => booking.id === id);
-  }
-  
-  async getBookingsByUser(userId: number): Promise<Booking[]> {
-    return this.bookings.filter(booking => booking.userId === userId);
-  }
-  
-  async getBookingsByCourt(courtId: number): Promise<Booking[]> {
-    return this.bookings.filter(booking => booking.courtId === courtId);
-  }
-  
-  async getBookingsByTimeRange(courtId: number, startTime: Date, endTime: Date): Promise<Booking[]> {
-    return this.bookings.filter(
-      booking => 
-        booking.courtId === courtId && 
-        ((booking.startTime >= startTime && booking.startTime < endTime) || 
-         (booking.endTime > startTime && booking.endTime <= endTime))
-    );
-  }
-  
-  async createBooking(booking: InsertBooking): Promise<Booking> {
-    const newBooking: Booking = {
-      id: this.bookings.length + 1,
-      ...booking,
-      createdAt: new Date(),
-    };
-    this.bookings.push(newBooking);
-    return newBooking;
-  }
-  
-  // Event methods
-  async getEvent(id: number): Promise<Event | undefined> {
-    return this.events.find(event => event.id === id);
-  }
-  
-  async getEventsByOrganizer(organizerId: number): Promise<Event[]> {
-    return this.events.filter(event => event.organizerId === organizerId);
-  }
-  
-  async getEventsByType(eventType: string): Promise<Event[]> {
-    return this.events.filter(event => event.eventType === eventType);
-  }
-  
-  async getUpcomingEvents(): Promise<Event[]> {
-    const now = new Date();
-    return this.events.filter(event => event.startDate > now);
-  }
-  
-  async createEvent(event: InsertEvent): Promise<Event> {
-    const newEvent: Event = {
-      id: this.events.length + 1,
-      ...event,
-      createdAt: new Date(),
-    };
-    this.events.push(newEvent);
-    return newEvent;
-  }
-  
-  async updateEventStatus(id: number, status: string): Promise<Event | undefined> {
-    const event = await this.getEvent(id);
-    if (!event) return undefined;
-    
-    event.status = status;
-    return event;
-  }
-  
-  async updateEventParticipantCount(id: number, count: number): Promise<Event | undefined> {
-    const event = await this.getEvent(id);
-    if (!event) return undefined;
-    
-    event.currentParticipants = count;
-    return event;
-  }
-  
-  // Event Participants methods
-  async getEventParticipant(id: number): Promise<EventParticipant | undefined> {
-    return this.eventParticipants.find(participant => participant.id === id);
-  }
-  
-  async getEventParticipantsByEvent(eventId: number): Promise<EventParticipant[]> {
-    return this.eventParticipants.filter(participant => participant.eventId === eventId);
-  }
-  
-  async getEventParticipantsByUser(userId: number): Promise<EventParticipant[]> {
-    return this.eventParticipants.filter(participant => participant.userId === userId);
-  }
-  
-  async createEventParticipant(participant: InsertEventParticipant): Promise<EventParticipant> {
-    const newParticipant: EventParticipant = {
-      id: this.eventParticipants.length + 1,
-      ...participant,
-      createdAt: new Date(),
-    };
-    this.eventParticipants.push(newParticipant);
-    return newParticipant;
-  }
-  
-  async updateEventParticipantStatus(id: number, status: string, paymentStatus: string): Promise<EventParticipant | undefined> {
-    const participant = await this.getEventParticipant(id);
-    if (!participant) return undefined;
-    
-    participant.status = status;
-    participant.paymentStatus = paymentStatus;
-    return participant;
-  }
-  
-  // Payment methods
-  async getPayment(id: number): Promise<Payment | undefined> {
-    return this.payments.find(payment => payment.id === id);
-  }
-  
-  async getPaymentsByUser(userId: number): Promise<Payment[]> {
-    return this.payments.filter(payment => payment.userId === userId);
-  }
-  
-  async getPaymentsByEvent(eventId: number): Promise<Payment[]> {
-    return this.payments.filter(payment => payment.eventId === eventId);
-  }
-  
-  async createPayment(payment: InsertPayment): Promise<Payment> {
-    const newPayment: Payment = {
-      id: this.payments.length + 1,
-      ...payment,
-      createdAt: new Date(),
-    };
-    this.payments.push(newPayment);
-    return newPayment;
-  }
-  
-  async updatePaymentStatus(id: number, status: string): Promise<Payment | undefined> {
-    const payment = await this.getPayment(id);
-    if (!payment) return undefined;
-    
-    payment.status = status;
-    return payment;
-  }
-  
-  // Chat methods
-  async getChatGroup(id: number): Promise<ChatGroup | undefined> {
-    return this.chatGroups.find(group => group.id === id);
-  }
-  
-  async getChatGroupsByEvent(eventId: number): Promise<ChatGroup[]> {
-    return this.chatGroups.filter(group => group.eventId === eventId);
-  }
-  
-  async getChatGroupsByBusiness(businessId: number): Promise<ChatGroup[]> {
-    return this.chatGroups.filter(group => group.businessId === businessId);
-  }
-  
-  async getChatGroupsByUser(userId: number): Promise<ChatGroup[]> {
-    const memberGroups = this.chatGroupMembers.filter(member => member.userId === userId);
-    return memberGroups.map(member => 
-      this.chatGroups.find(group => group.id === member.groupId)
-    ).filter(Boolean) as ChatGroup[];
-  }
-  
-  async createChatGroup(group: InsertChatGroup): Promise<ChatGroup> {
-    const newGroup: ChatGroup = {
-      id: this.chatGroups.length + 1,
-      ...group,
-      createdAt: new Date(),
-    };
-    this.chatGroups.push(newGroup);
-    return newGroup;
-  }
-  
-  async addUserToChatGroup(userId: number, groupId: number): Promise<ChatGroupMember> {
-    const newMember: ChatGroupMember = {
-      id: this.chatGroupMembers.length + 1,
-      groupId,
-      userId,
-      joinedAt: new Date(),
-    };
-    this.chatGroupMembers.push(newMember);
-    return newMember;
-  }
-  
-  // Chat Message methods
-  async getChatMessages(groupId: number): Promise<ChatMessage[]> {
-    return this.chatMessages.filter(message => message.chatGroupId === groupId);
-  }
-  
-  async getDirectMessages(userId: number, receiverId: number): Promise<ChatMessage[]> {
-    return this.chatMessages.filter(message => 
-      (message.senderId === userId && message.receiverId === receiverId) ||
-      (message.senderId === receiverId && message.receiverId === userId)
-    );
-  }
-  
-  async createChatMessage(message: InsertChatMessage): Promise<ChatMessage> {
-    const newMessage: ChatMessage = {
-      id: this.chatMessages.length + 1,
-      ...message,
-      sentAt: new Date(),
-      readAt: undefined,
-    };
-    this.chatMessages.push(newMessage);
-    return newMessage;
-  }
-  
-  async markMessagesAsRead(userId: number, groupId?: number): Promise<void> {
-    const now = new Date();
-    if (groupId) {
-      // Mark all unread messages in a group as read
-      this.chatMessages.forEach(message => {
-        if (message.chatGroupId === groupId && message.receiverId === userId && !message.readAt) {
-          message.readAt = now;
-        }
-      });
-    } else {
-      // Mark all direct messages as read
-      this.chatMessages.forEach(message => {
-        if (message.receiverId === userId && !message.readAt) {
-          message.readAt = now;
-        }
-      });
-    }
-  }
-}
-
-// DatabaseStorage implementation for PostgreSQL
+// DatabaseStorage implementation for PostgreSQL with multi-tenant support
 export class DatabaseStorage implements IStorage {
   sessionStore: SessionStore;
   
@@ -401,45 +98,81 @@ export class DatabaseStorage implements IStorage {
     });
   }
   
-  // User methods
-  async getUser(id: number): Promise<User | undefined> {
+  // Helper method to execute queries in the master schema
+  private async executeInMasterSchema<T>(callback: () => Promise<T>): Promise<T> {
+    const client = await getClient();
     try {
-      const result = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
-      return result.rows[0] || undefined;
-    } catch (error) {
-      console.error('Error fetching user by ID:', error);
-      return undefined;
+      await setSearchPath(client, getMasterSchemaName());
+      const result = await callback();
+      return result;
+    } finally {
+      await resetSearchPath(client);
+      releaseClient(client);
     }
+  }
+  
+  // Helper method to execute queries in a tenant schema
+  private async executeInTenantSchema<T>(businessId: number, callback: () => Promise<T>): Promise<T> {
+    const client = await getClient();
+    try {
+      await setSearchPath(client, getTenantSchemaName(businessId));
+      const result = await callback();
+      return result;
+    } finally {
+      await resetSearchPath(client);
+      releaseClient(client);
+    }
+  }
+  
+  // User methods (in master schema)
+  async getUser(id: number): Promise<User | undefined> {
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
+        return result.rows[0] || undefined;
+      } catch (error) {
+        console.error('Error fetching user by ID:', error);
+        return undefined;
+      }
+    });
   }
   
   async getUserByUsername(username: string): Promise<User | undefined> {
-    try {
-      const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
-      return result.rows[0] || undefined;
-    } catch (error) {
-      console.error('Error fetching user by username:', error);
-      return undefined;
-    }
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+        return result.rows[0] || undefined;
+      } catch (error) {
+        console.error('Error fetching user by username:', error);
+        return undefined;
+      }
+    });
   }
   
   async createUser(user: InsertUser): Promise<User> {
-    try {
-      const result = await pool.query(
-        'INSERT INTO users (username, password, role, email, firstName, lastName) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-        [user.username, user.password, user.role, user.email, user.firstName, user.lastName]
-      );
-      return result.rows[0];
-    } catch (error) {
-      console.error('Error creating user:', error);
-      throw error;
-    }
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query(
+          'INSERT INTO users (username, password, email, full_name, phone, role) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+          [user.username, user.password, user.email, user.fullName, user.phone, user.role || 'user']
+        );
+        return result.rows[0];
+      } catch (error) {
+        console.error('Error creating user:', error);
+        throw error;
+      }
+    });
   }
   
-  // Business methods
+  // Business methods (in tenant schema)
   async getBusiness(id: number): Promise<Business | undefined> {
+    // First need to find which schema this business belongs to
     try {
-      const result = await pool.query('SELECT * FROM businesses WHERE id = $1', [id]);
-      return result.rows[0] || undefined;
+      const tenantSchema = getTenantSchemaName(id);
+      return this.executeInTenantSchema(id, async () => {
+        const result = await pool.query('SELECT * FROM businesses WHERE id = $1', [id]);
+        return result.rows[0] || undefined;
+      });
     } catch (error) {
       console.error('Error fetching business by ID:', error);
       return undefined;
@@ -447,240 +180,666 @@ export class DatabaseStorage implements IStorage {
   }
   
   async getBusinessesByOwner(ownerId: number): Promise<Business[]> {
-    try {
-      const result = await pool.query('SELECT * FROM businesses WHERE "ownerId" = $1', [ownerId]);
-      return result.rows;
-    } catch (error) {
-      console.error('Error fetching businesses by owner:', error);
-      return [];
-    }
+    // This requires checking across all tenant schemas
+    // For now, we'll search by owner_id in the master table that would track businesses
+    return this.executeInMasterSchema(async () => {
+      try {
+        // Query to find all businesses owned by this user
+        // In a real implementation, you'd have a master table tracking all businesses and their schemas
+        const result = await pool.query(
+          'SELECT * FROM businesses WHERE owner_id = $1',
+          [ownerId]
+        );
+        return result.rows;
+      } catch (error) {
+        console.error('Error fetching businesses by owner:', error);
+        return [];
+      }
+    });
   }
   
   async createBusiness(business: InsertBusiness): Promise<Business> {
-    try {
-      const result = await pool.query(
-        'INSERT INTO businesses ("ownerId", name, description, address, phoneNumber, website, logoUrl) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
-        [business.ownerId, business.name, business.description, business.address, business.phoneNumber, business.website, business.logoUrl]
-      );
-      return result.rows[0];
-    } catch (error) {
-      console.error('Error creating business:', error);
-      throw error;
-    }
-  }
-  
-  // Chat Message methods
-  async getChatMessages(groupId: number): Promise<ChatMessage[]> {
-    try {
-      const result = await pool.query(
-        'SELECT * FROM chat_messages WHERE "chatGroupId" = $1 ORDER BY "sentAt" ASC',
-        [groupId]
-      );
-      return result.rows;
-    } catch (error) {
-      console.error('Error fetching chat messages:', error);
-      return [];
-    }
-  }
-  
-  async getDirectMessages(userId: number, receiverId: number): Promise<ChatMessage[]> {
-    try {
-      const result = await pool.query(
-        `SELECT * FROM chat_messages 
-         WHERE ("senderId" = $1 AND "receiverId" = $2) 
-         OR ("senderId" = $2 AND "receiverId" = $1) 
-         ORDER BY "sentAt" ASC`,
-        [userId, receiverId]
-      );
-      return result.rows;
-    } catch (error) {
-      console.error('Error fetching direct messages:', error);
-      return [];
-    }
-  }
-  
-  async createChatMessage(message: InsertChatMessage): Promise<ChatMessage> {
-    try {
-      const result = await pool.query(
-        `INSERT INTO chat_messages 
-         ("senderId", "receiverId", "chatGroupId", content, "messageId") 
-         VALUES ($1, $2, $3, $4, $5) 
-         RETURNING *`,
-        [
-          message.senderId, 
-          message.receiverId, 
-          message.chatGroupId, 
-          message.content,
-          message.messageId
-        ]
-      );
-      return result.rows[0];
-    } catch (error) {
-      console.error('Error creating chat message:', error);
-      throw error;
-    }
-  }
-  
-  async markMessagesAsRead(userId: number, groupId?: number): Promise<void> {
-    try {
-      const now = new Date();
-      if (groupId) {
-        await pool.query(
-          `UPDATE chat_messages 
-           SET "readAt" = $1 
-           WHERE "chatGroupId" = $2 AND "receiverId" = $3 AND "readAt" IS NULL`,
-          [now, groupId, userId]
+    // Creating a business requires:
+    // 1. Creating a new tenant schema
+    // 2. Inserting the business record in that schema
+    // 3. Tracking the business in the master schema
+    
+    return withTransaction(async (client) => {
+      try {
+        // First, add an entry to the master schema to track this business
+        await setSearchPath(client, getMasterSchemaName());
+        
+        // Insert into a master table that tracks businesses and their schemas
+        const masterResult = await client.query(
+          'INSERT INTO businesses (name, owner_id, schema_name) VALUES ($1, $2, $3) RETURNING id',
+          [business.name, business.ownerId, getTenantSchemaName(business.id)]
         );
-      } else {
-        await pool.query(
-          `UPDATE chat_messages 
-           SET "readAt" = $1 
-           WHERE "receiverId" = $2 AND "readAt" IS NULL`,
-          [now, userId]
+        
+        const businessId = masterResult.rows[0].id;
+        
+        // Set up the tenant schema
+        await setSearchPath(client, getTenantSchemaName(businessId));
+        
+        // Insert the business details into the tenant schema
+        const tenantResult = await client.query(
+          `INSERT INTO businesses (
+            master_id, name, description, owner_id, address, phone, email, website, created_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW()) RETURNING *`,
+          [
+            businessId,
+            business.name,
+            business.description,
+            business.ownerId,
+            business.address,
+            business.phone,
+            business.email,
+            business.website
+          ]
         );
+        
+        return tenantResult.rows[0];
+      } catch (error) {
+        console.error('Error creating business:', error);
+        throw error;
       }
-    } catch (error) {
-      console.error('Error marking messages as read:', error);
-      throw error;
-    }
+    });
   }
   
-  // The rest of the methods from MemStorage would be implemented similarly
-  // We'll delegate to MemStorage for now and implement them as needed
-  async getCourt(id: number): Promise<Court | undefined> {
-    return memStorage.getCourt(id);
+  // Court methods (in tenant schema)
+  async getCourt(id: number, businessId: number): Promise<Court | undefined> {
+    return this.executeInTenantSchema(businessId, async () => {
+      try {
+        const result = await pool.query('SELECT * FROM courts WHERE id = $1', [id]);
+        return result.rows[0] || undefined;
+      } catch (error) {
+        console.error('Error fetching court by ID:', error);
+        return undefined;
+      }
+    });
   }
   
   async getCourtsByBusiness(businessId: number): Promise<Court[]> {
-    return memStorage.getCourtsByBusiness(businessId);
+    return this.executeInTenantSchema(businessId, async () => {
+      try {
+        const result = await pool.query('SELECT * FROM courts WHERE business_id = $1', [businessId]);
+        return result.rows;
+      } catch (error) {
+        console.error('Error fetching courts by business:', error);
+        return [];
+      }
+    });
   }
   
-  async createCourt(court: InsertCourt): Promise<Court> {
-    return memStorage.createCourt(court);
+  async createCourt(court: InsertCourt, businessId: number): Promise<Court> {
+    return this.executeInTenantSchema(businessId, async () => {
+      try {
+        const result = await pool.query(
+          `INSERT INTO courts (business_id, name, description, price_per_hour, is_available) 
+           VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+          [court.businessId, court.name, court.description, court.pricePerHour, court.isAvailable ?? true]
+        );
+        return result.rows[0];
+      } catch (error) {
+        console.error('Error creating court:', error);
+        throw error;
+      }
+    });
   }
   
-  async updateCourtAvailability(id: number, isAvailable: boolean): Promise<Court | undefined> {
-    return memStorage.updateCourtAvailability(id, isAvailable);
+  async updateCourtAvailability(id: number, businessId: number, isAvailable: boolean): Promise<Court | undefined> {
+    return this.executeInTenantSchema(businessId, async () => {
+      try {
+        const result = await pool.query(
+          'UPDATE courts SET is_available = $1 WHERE id = $2 RETURNING *',
+          [isAvailable, id]
+        );
+        return result.rows[0] || undefined;
+      } catch (error) {
+        console.error('Error updating court availability:', error);
+        return undefined;
+      }
+    });
   }
   
-  async getBooking(id: number): Promise<Booking | undefined> {
-    return memStorage.getBooking(id);
+  // Booking methods (in tenant schema)
+  async getBooking(id: number, businessId: number): Promise<Booking | undefined> {
+    return this.executeInTenantSchema(businessId, async () => {
+      try {
+        const result = await pool.query('SELECT * FROM bookings WHERE id = $1', [id]);
+        return result.rows[0] || undefined;
+      } catch (error) {
+        console.error('Error fetching booking by ID:', error);
+        return undefined;
+      }
+    });
   }
   
   async getBookingsByUser(userId: number): Promise<Booking[]> {
-    return memStorage.getBookingsByUser(userId);
+    // This requires querying across all tenant schemas to find all bookings
+    // In practice, you'd have a master table tracking which schemas to query for a user
+    // For simplicity, this implementation is limited
+    
+    // Get all businesses and their schemas
+    const businesses = await this.getBusinessesByOwner(userId);
+    let allBookings: Booking[] = [];
+    
+    // Query each business schema for bookings
+    for (const business of businesses) {
+      const businessBookings = await this.executeInTenantSchema(business.id, async () => {
+        const result = await pool.query('SELECT * FROM bookings WHERE user_id = $1', [userId]);
+        return result.rows;
+      });
+      
+      allBookings = [...allBookings, ...businessBookings];
+    }
+    
+    return allBookings;
   }
   
-  async getBookingsByCourt(courtId: number): Promise<Booking[]> {
-    return memStorage.getBookingsByCourt(courtId);
+  async getBookingsByCourt(courtId: number, businessId: number): Promise<Booking[]> {
+    return this.executeInTenantSchema(businessId, async () => {
+      try {
+        const result = await pool.query('SELECT * FROM bookings WHERE court_id = $1', [courtId]);
+        return result.rows;
+      } catch (error) {
+        console.error('Error fetching bookings by court:', error);
+        return [];
+      }
+    });
   }
   
-  async getBookingsByTimeRange(courtId: number, startTime: Date, endTime: Date): Promise<Booking[]> {
-    return memStorage.getBookingsByTimeRange(courtId, startTime, endTime);
+  async getBookingsByTimeRange(courtId: number, businessId: number, startTime: Date, endTime: Date): Promise<Booking[]> {
+    return this.executeInTenantSchema(businessId, async () => {
+      try {
+        const result = await pool.query(
+          `SELECT * FROM bookings 
+           WHERE court_id = $1 
+           AND ((start_time >= $2 AND start_time < $3) OR (end_time > $2 AND end_time <= $3))`,
+          [courtId, startTime, endTime]
+        );
+        return result.rows;
+      } catch (error) {
+        console.error('Error fetching bookings by time range:', error);
+        return [];
+      }
+    });
   }
   
-  async createBooking(booking: InsertBooking): Promise<Booking> {
-    return memStorage.createBooking(booking);
+  async createBooking(booking: InsertBooking, businessId: number): Promise<Booking> {
+    return this.executeInTenantSchema(businessId, async () => {
+      try {
+        const result = await pool.query(
+          `INSERT INTO bookings (court_id, user_id, start_time, end_time, status) 
+           VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+          [booking.courtId, booking.userId, booking.startTime, booking.endTime, booking.status || 'confirmed']
+        );
+        return result.rows[0];
+      } catch (error) {
+        console.error('Error creating booking:', error);
+        throw error;
+      }
+    });
   }
   
+  // Event methods (in master schema)
   async getEvent(id: number): Promise<Event | undefined> {
-    return memStorage.getEvent(id);
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query('SELECT * FROM events WHERE id = $1', [id]);
+        return result.rows[0] || undefined;
+      } catch (error) {
+        console.error('Error fetching event by ID:', error);
+        return undefined;
+      }
+    });
   }
   
   async getEventsByOrganizer(organizerId: number): Promise<Event[]> {
-    return memStorage.getEventsByOrganizer(organizerId);
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query('SELECT * FROM events WHERE organizer_id = $1', [organizerId]);
+        return result.rows;
+      } catch (error) {
+        console.error('Error fetching events by organizer:', error);
+        return [];
+      }
+    });
   }
   
   async getEventsByType(eventType: string): Promise<Event[]> {
-    return memStorage.getEventsByType(eventType);
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query('SELECT * FROM events WHERE event_type = $1', [eventType]);
+        return result.rows;
+      } catch (error) {
+        console.error('Error fetching events by type:', error);
+        return [];
+      }
+    });
   }
   
   async getUpcomingEvents(): Promise<Event[]> {
-    return memStorage.getUpcomingEvents();
+    return this.executeInMasterSchema(async () => {
+      try {
+        const now = new Date();
+        const result = await pool.query('SELECT * FROM events WHERE start_time > $1', [now]);
+        return result.rows;
+      } catch (error) {
+        console.error('Error fetching upcoming events:', error);
+        return [];
+      }
+    });
   }
   
   async createEvent(event: InsertEvent): Promise<Event> {
-    return memStorage.createEvent(event);
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query(
+          `INSERT INTO events (
+            name, description, event_type, organizer_id, start_time, end_time, 
+            location, max_participants, current_participants, price, status
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+          [
+            event.name,
+            event.description,
+            event.eventType,
+            event.organizerId,
+            event.startTime,
+            event.endTime,
+            event.location,
+            event.maxParticipants,
+            event.currentParticipants || 0,
+            event.price,
+            event.status || 'open'
+          ]
+        );
+        return result.rows[0];
+      } catch (error) {
+        console.error('Error creating event:', error);
+        throw error;
+      }
+    });
   }
   
   async updateEventStatus(id: number, status: string): Promise<Event | undefined> {
-    return memStorage.updateEventStatus(id, status);
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query(
+          'UPDATE events SET status = $1 WHERE id = $2 RETURNING *',
+          [status, id]
+        );
+        return result.rows[0] || undefined;
+      } catch (error) {
+        console.error('Error updating event status:', error);
+        return undefined;
+      }
+    });
   }
   
   async updateEventParticipantCount(id: number, count: number): Promise<Event | undefined> {
-    return memStorage.updateEventParticipantCount(id, count);
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query(
+          'UPDATE events SET current_participants = $1 WHERE id = $2 RETURNING *',
+          [count, id]
+        );
+        return result.rows[0] || undefined;
+      } catch (error) {
+        console.error('Error updating event participant count:', error);
+        return undefined;
+      }
+    });
   }
   
+  // Event Participants methods (in master schema)
   async getEventParticipant(id: number): Promise<EventParticipant | undefined> {
-    return memStorage.getEventParticipant(id);
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query('SELECT * FROM event_participants WHERE id = $1', [id]);
+        return result.rows[0] || undefined;
+      } catch (error) {
+        console.error('Error fetching event participant by ID:', error);
+        return undefined;
+      }
+    });
   }
   
   async getEventParticipantsByEvent(eventId: number): Promise<EventParticipant[]> {
-    return memStorage.getEventParticipantsByEvent(eventId);
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query('SELECT * FROM event_participants WHERE event_id = $1', [eventId]);
+        return result.rows;
+      } catch (error) {
+        console.error('Error fetching event participants by event:', error);
+        return [];
+      }
+    });
   }
   
   async getEventParticipantsByUser(userId: number): Promise<EventParticipant[]> {
-    return memStorage.getEventParticipantsByUser(userId);
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query('SELECT * FROM event_participants WHERE user_id = $1', [userId]);
+        return result.rows;
+      } catch (error) {
+        console.error('Error fetching event participants by user:', error);
+        return [];
+      }
+    });
   }
   
   async createEventParticipant(participant: InsertEventParticipant): Promise<EventParticipant> {
-    return memStorage.createEventParticipant(participant);
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query(
+          'INSERT INTO event_participants (event_id, user_id, status, payment_status) VALUES ($1, $2, $3, $4) RETURNING *',
+          [participant.eventId, participant.userId, participant.status || 'registered', participant.paymentStatus || 'pending']
+        );
+        return result.rows[0];
+      } catch (error) {
+        console.error('Error creating event participant:', error);
+        throw error;
+      }
+    });
   }
   
   async updateEventParticipantStatus(id: number, status: string, paymentStatus: string): Promise<EventParticipant | undefined> {
-    return memStorage.updateEventParticipantStatus(id, status, paymentStatus);
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query(
+          'UPDATE event_participants SET status = $1, payment_status = $2 WHERE id = $3 RETURNING *',
+          [status, paymentStatus, id]
+        );
+        return result.rows[0] || undefined;
+      } catch (error) {
+        console.error('Error updating event participant status:', error);
+        return undefined;
+      }
+    });
   }
   
+  // Payment methods (in master schema)
   async getPayment(id: number): Promise<Payment | undefined> {
-    return memStorage.getPayment(id);
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query('SELECT * FROM payments WHERE id = $1', [id]);
+        return result.rows[0] || undefined;
+      } catch (error) {
+        console.error('Error fetching payment by ID:', error);
+        return undefined;
+      }
+    });
   }
   
   async getPaymentsByUser(userId: number): Promise<Payment[]> {
-    return memStorage.getPaymentsByUser(userId);
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query('SELECT * FROM payments WHERE user_id = $1', [userId]);
+        return result.rows;
+      } catch (error) {
+        console.error('Error fetching payments by user:', error);
+        return [];
+      }
+    });
   }
   
   async getPaymentsByEvent(eventId: number): Promise<Payment[]> {
-    return memStorage.getPaymentsByEvent(eventId);
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query('SELECT * FROM payments WHERE event_id = $1', [eventId]);
+        return result.rows;
+      } catch (error) {
+        console.error('Error fetching payments by event:', error);
+        return [];
+      }
+    });
   }
   
   async createPayment(payment: InsertPayment): Promise<Payment> {
-    return memStorage.createPayment(payment);
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query(
+          `INSERT INTO payments (
+            user_id, event_id, amount, payment_method, status, transaction_id
+          ) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+          [
+            payment.userId,
+            payment.eventId,
+            payment.amount,
+            payment.paymentMethod,
+            payment.status || 'pending',
+            payment.transactionId
+          ]
+        );
+        return result.rows[0];
+      } catch (error) {
+        console.error('Error creating payment:', error);
+        throw error;
+      }
+    });
   }
   
   async updatePaymentStatus(id: number, status: string): Promise<Payment | undefined> {
-    return memStorage.updatePaymentStatus(id, status);
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query(
+          'UPDATE payments SET status = $1 WHERE id = $2 RETURNING *',
+          [status, id]
+        );
+        return result.rows[0] || undefined;
+      } catch (error) {
+        console.error('Error updating payment status:', error);
+        return undefined;
+      }
+    });
   }
   
+  // Chat methods (in master schema)
   async getChatGroup(id: number): Promise<ChatGroup | undefined> {
-    return memStorage.getChatGroup(id);
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query('SELECT * FROM chat_groups WHERE id = $1', [id]);
+        return result.rows[0] || undefined;
+      } catch (error) {
+        console.error('Error fetching chat group by ID:', error);
+        return undefined;
+      }
+    });
   }
   
   async getChatGroupsByEvent(eventId: number): Promise<ChatGroup[]> {
-    return memStorage.getChatGroupsByEvent(eventId);
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query('SELECT * FROM chat_groups WHERE event_id = $1', [eventId]);
+        return result.rows;
+      } catch (error) {
+        console.error('Error fetching chat groups by event:', error);
+        return [];
+      }
+    });
   }
   
   async getChatGroupsByBusiness(businessId: number): Promise<ChatGroup[]> {
-    return memStorage.getChatGroupsByBusiness(businessId);
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query('SELECT * FROM chat_groups WHERE business_id = $1', [businessId]);
+        return result.rows;
+      } catch (error) {
+        console.error('Error fetching chat groups by business:', error);
+        return [];
+      }
+    });
   }
   
   async getChatGroupsByUser(userId: number): Promise<ChatGroup[]> {
-    return memStorage.getChatGroupsByUser(userId);
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query(
+          `SELECT g.* FROM chat_groups g
+           JOIN chat_group_members m ON g.id = m.group_id
+           WHERE m.user_id = $1`,
+          [userId]
+        );
+        return result.rows;
+      } catch (error) {
+        console.error('Error fetching chat groups by user:', error);
+        return [];
+      }
+    });
   }
   
   async createChatGroup(group: InsertChatGroup): Promise<ChatGroup> {
-    return memStorage.createChatGroup(group);
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query(
+          `INSERT INTO chat_groups (
+            name, description, event_id, business_id, is_direct
+          ) VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+          [
+            group.name,
+            group.description,
+            group.eventId,
+            group.businessId,
+            group.isDirect || false
+          ]
+        );
+        return result.rows[0];
+      } catch (error) {
+        console.error('Error creating chat group:', error);
+        throw error;
+      }
+    });
   }
   
   async addUserToChatGroup(userId: number, groupId: number): Promise<ChatGroupMember> {
-    return memStorage.addUserToChatGroup(userId, groupId);
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query(
+          'INSERT INTO chat_group_members (group_id, user_id) VALUES ($1, $2) RETURNING *',
+          [groupId, userId]
+        );
+        return result.rows[0];
+      } catch (error) {
+        console.error('Error adding user to chat group:', error);
+        throw error;
+      }
+    });
+  }
+  
+  // Chat Message methods (in master schema)
+  async getChatMessages(groupId: number): Promise<ChatMessage[]> {
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query(
+          'SELECT * FROM chat_messages WHERE group_id = $1 ORDER BY sent_at ASC',
+          [groupId]
+        );
+        return result.rows;
+      } catch (error) {
+        console.error('Error fetching chat messages by group:', error);
+        return [];
+      }
+    });
+  }
+  
+  async getDirectMessages(userId: number, receiverId: number): Promise<ChatMessage[]> {
+    return this.executeInMasterSchema(async () => {
+      try {
+        // Find the direct chat group between these users
+        const groupResult = await pool.query(
+          `SELECT cg.id FROM chat_groups cg
+           WHERE cg.is_direct = true
+           AND EXISTS (
+             SELECT 1 FROM chat_group_members cgm1
+             WHERE cgm1.group_id = cg.id AND cgm1.user_id = $1
+           )
+           AND EXISTS (
+             SELECT 1 FROM chat_group_members cgm2
+             WHERE cgm2.group_id = cg.id AND cgm2.user_id = $2
+           )
+           LIMIT 1`,
+          [userId, receiverId]
+        );
+        
+        if (groupResult.rows.length === 0) {
+          return [];
+        }
+        
+        const groupId = groupResult.rows[0].id;
+        
+        // Get messages from this group
+        const result = await pool.query(
+          'SELECT * FROM chat_messages WHERE group_id = $1 ORDER BY sent_at ASC',
+          [groupId]
+        );
+        return result.rows;
+      } catch (error) {
+        console.error('Error fetching direct messages:', error);
+        return [];
+      }
+    });
+  }
+  
+  async createChatMessage(message: InsertChatMessage): Promise<ChatMessage> {
+    return this.executeInMasterSchema(async () => {
+      try {
+        const result = await pool.query(
+          `INSERT INTO chat_messages (
+            group_id, sender_id, message, message_type
+          ) VALUES ($1, $2, $3, $4) RETURNING *`,
+          [
+            message.groupId,
+            message.senderId,
+            message.message,
+            message.messageType || 'text'
+          ]
+        );
+        return result.rows[0];
+      } catch (error) {
+        console.error('Error creating chat message:', error);
+        throw error;
+      }
+    });
+  }
+  
+  async markMessagesAsRead(userId: number, groupId?: number): Promise<void> {
+    return this.executeInMasterSchema(async () => {
+      try {
+        const now = new Date();
+        
+        if (groupId) {
+          // Mark messages in a specific group as read
+          await pool.query(
+            `UPDATE chat_messages 
+             SET read_at = $1 
+             WHERE group_id = $2 
+             AND sender_id != $3 
+             AND read_at IS NULL`,
+            [now, groupId, userId]
+          );
+        } else {
+          // Mark all messages to this user as read
+          await pool.query(
+            `UPDATE chat_messages 
+             SET read_at = $1 
+             WHERE group_id IN (
+               SELECT group_id FROM chat_group_members WHERE user_id = $2
+             )
+             AND sender_id != $2
+             AND read_at IS NULL`,
+            [now, userId]
+          );
+        }
+      } catch (error) {
+        console.error('Error marking messages as read:', error);
+        throw error;
+      }
+    });
   }
 }
 
-// Create the memory storage instance for fallback and initial use
-const memStorage = new MemStorage();
-
-// Choose which storage implementation to use based on configuration
-// Using MemStorage for now, but can switch to DatabaseStorage when needed
-export const storage = config.nodeEnv === 'production' ? 
-  new DatabaseStorage() : 
-  memStorage;
+// Use database storage by default, with fallback to memory storage
+// This should be updated based on your environment configuration
+export const storage = config.environment === 'development' && process.env.USE_MEMORY_STORAGE === 'true' 
+  ? new MemStorage() 
+  : new DatabaseStorage();
