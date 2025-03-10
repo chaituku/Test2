@@ -1,5 +1,6 @@
 import session from "express-session";
 import createMemoryStore from "memorystore";
+import { Store as SessionStore } from "express-session";
 import { 
   User, InsertUser, Business, InsertBusiness, Court, InsertCourt, 
   Booking, InsertBooking, Event, InsertEvent, EventParticipant, 
@@ -41,6 +42,7 @@ export interface IStorage {
   getUpcomingEvents(): Promise<Event[]>;
   createEvent(event: InsertEvent): Promise<Event>;
   updateEventStatus(id: number, status: string): Promise<Event | undefined>;
+  updateEventParticipantCount(id: number, count: number): Promise<Event | undefined>;
   
   // Event Participants methods
   getEventParticipant(id: number): Promise<EventParticipant | undefined>;
@@ -71,7 +73,7 @@ export interface IStorage {
   markMessagesAsRead(userId: number, groupId?: number): Promise<void>;
   
   // Session store
-  sessionStore: session.SessionStore;
+  sessionStore: SessionStore;
 }
 
 // In-memory storage implementation
@@ -87,7 +89,7 @@ export class MemStorage implements IStorage {
   private chatGroupMembers: ChatGroupMember[] = [];
   private chatMessages: ChatMessage[] = [];
   
-  sessionStore: session.SessionStore;
+  sessionStore: SessionStore;
   
   constructor() {
     this.sessionStore = new MemoryStore({
@@ -225,6 +227,14 @@ export class MemStorage implements IStorage {
     if (!event) return undefined;
     
     event.status = status;
+    return event;
+  }
+  
+  async updateEventParticipantCount(id: number, count: number): Promise<Event | undefined> {
+    const event = await this.getEvent(id);
+    if (!event) return undefined;
+    
+    event.currentParticipants = count;
     return event;
   }
   

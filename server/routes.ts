@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import * as ws from "ws";
+const { WebSocket } = ws;
 import { setupAuth } from "./auth";
 import { storage } from "./storage";
 
@@ -120,6 +121,314 @@ export function registerRoutes(app: Express): Server {
     
     const updatedCourt = await storage.updateCourtAvailability(id, isAvailable);
     res.json(updatedCourt);
+  });
+
+  // Event routes
+  app.get("/api/events", async (req, res) => {
+    try {
+      const events = await storage.getUpcomingEvents();
+      res.json(events);
+    } catch (error) {
+      console.error("Error getting events:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  app.get("/api/events/organizer", async (req, res) => {
+    if (!req.isAuthenticated()) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    
+    try {
+      const events = await storage.getEventsByOrganizer(req.user.id);
+      res.json(events);
+    } catch (error) {
+      console.error("Error getting organizer events:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  app.post("/api/events", async (req, res) => {
+    if (!req.isAuthenticated() || req.user.role !== "organizer") {
+      return res.status(403).json({ error: "Only organizers can create events" });
+    }
+    
+    try {
+      const eventData = {
+        ...req.body,
+        organizerId: req.user.id,
+        status: "open", // Initial status is open for enrollment
+        currentParticipants: 0
+      };
+      
+      const event = await storage.createEvent(eventData);
+      res.status(201).json(event);
+    } catch (error) {
+      console.error("Error creating event:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  app.patch("/api/events/:id/status", async (req, res) => {
+    if (!req.isAuthenticated() || req.user.role !== "organizer") {
+      return res.status(403).json({ error: "Only organizers can update event status" });
+    }
+    
+    const eventId = parseInt(req.params.id);
+    const { status } = req.body;
+    
+    if (!["open", "closed", "cancelled", "completed"].includes(status)) {
+      return res.status(400).json({ error: "Invalid status value" });
+    }
+    
+    try {
+      const event = await storage.getEvent(eventId);
+      
+      if (!event) {
+        return res.status(404).json({ error: "Event not found" });
+      }
+      
+      if (event.organizerId !== req.user.id) {
+        return res.status(403).json({ error: "You can only update your own events" });
+      }
+      
+      const updatedEvent = await storage.updateEventStatus(eventId, status);
+      res.json(updatedEvent);
+    } catch (error) {
+      console.error("Error updating event status:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  app.get("/api/events/:id/participants", async (req, res) => {
+    if (!req.isAuthenticated()) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    
+    const eventId = parseInt(req.params.id);
+    
+    try {
+      const event = await storage.getEvent(eventId);
+      
+      if (!event) {
+        return res.status(404).json({ error: "Event not found" });
+      }
+      
+      // Only the organizer or a participant can view the participant list
+      const isOrganizer = event.organizerId === req.user.id;
+      const participants = await storage.getEventParticipantsByEvent(eventId);
+      const isParticipant = participants.some(p => p.userId === req.user.id);
+      
+      if (!isOrganizer && !isParticipant) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+      
+      res.json(participants);
+    } catch (error) {
+      console.error("Error getting event participants:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  app.post("/api/events/:id/enroll", async (req, res) => {
+    if (!req.isAuthenticated()) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    
+    const eventId = parseInt(req.params.id);
+    
+    try {
+      const event = await storage.getEvent(eventId);
+      
+      if (!event) {
+        return res.status(404).json({ error: "Event not found" });
+      }
+      
+      if (event.status !== "open") {
+        return res.status(400).json({ error: "Event is not open for enrollment" });
+      }
+      
+      // Check if user is already enrolled
+      const participants = await storage.getEventParticipantsByEvent(eventId);
+      const existingParticipant = participants.find(p => p.userId === req.user.id);
+      
+      if (existingParticipant) {
+        return res.status(400).json({ error: "You are already enrolled in this event" });
+      }
+      
+      // Determine if user should be added to waitlist
+      const isWaitlisted = event.currentParticipants >= event.maxParticipants;
+      const participantStatus = isWaitlisted ? "waitlisted" : "confirmed";
+      
+      // Create participant record
+      const participant = await storage.createEventParticipant({
+        eventId,
+        userId: req.user.id,
+        status: participantStatus,
+        paymentStatus: event.price > 0 ? "pending" : "not_required"
+      });
+      
+      // Update event participant count if not waitlisted
+      if (!isWaitlisted) {
+        await storage.updateEventParticipantCount(eventId, event.currentParticipants + 1);
+      }
+      
+      res.status(201).json(participant);
+    } catch (error) {
+      console.error("Error enrolling in event:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  app.post("/api/events/:id/unenroll", async (req, res) => {
+    if (!req.isAuthenticated()) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    
+    const eventId = parseInt(req.params.id);
+    
+    try {
+      const event = await storage.getEvent(eventId);
+      
+      if (!event) {
+        return res.status(404).json({ error: "Event not found" });
+      }
+      
+      // Check if user is enrolled
+      const participants = await storage.getEventParticipantsByEvent(eventId);
+      const existingParticipant = participants.find(p => p.userId === req.user.id);
+      
+      if (!existingParticipant) {
+        return res.status(400).json({ error: "You are not enrolled in this event" });
+      }
+      
+      // Process unenrollment based on current status
+      if (existingParticipant.status === "waitlisted") {
+        // Waitlisted users can always unenroll
+        await storage.updateEventParticipantStatus(
+          existingParticipant.id, 
+          "cancelled", 
+          existingParticipant.paymentStatus
+        );
+        
+        res.json({ message: "Successfully unenrolled from waitlist" });
+      } else if (existingParticipant.status === "confirmed") {
+        // For confirmed participants, check if there's a waitlist
+        const waitlistedParticipants = participants.filter(p => p.status === "waitlisted");
+        
+        if (waitlistedParticipants.length > 0) {
+          // If there are waitlisted participants, move the first one to confirmed
+          const nextParticipant = waitlistedParticipants[0];
+          await storage.updateEventParticipantStatus(
+            nextParticipant.id, 
+            "confirmed", 
+            nextParticipant.paymentStatus
+          );
+          
+          // Update the current participant to cancelled
+          await storage.updateEventParticipantStatus(
+            existingParticipant.id, 
+            "cancelled", 
+            existingParticipant.paymentStatus
+          );
+          
+          res.json({ message: "Successfully unenrolled. A waitlisted participant has been confirmed." });
+        } else {
+          // If no waitlist, check if event allows direct cancellation
+          if (event.allowDirectCancellation) {
+            await storage.updateEventParticipantStatus(
+              existingParticipant.id, 
+              "cancelled", 
+              existingParticipant.paymentStatus
+            );
+            
+            // Decrease participant count
+            await storage.updateEventParticipantCount(eventId, event.currentParticipants - 1);
+            
+            res.json({ message: "Successfully unenrolled from event" });
+          } else {
+            // Request organizer approval for cancellation
+            await storage.updateEventParticipantStatus(
+              existingParticipant.id, 
+              "pending_cancellation", 
+              existingParticipant.paymentStatus
+            );
+            
+            res.json({ message: "Cancellation request submitted to the organizer" });
+          }
+        }
+      } else {
+        res.status(400).json({ error: "Cannot unenroll with current status: " + existingParticipant.status });
+      }
+    } catch (error) {
+      console.error("Error unenrolling from event:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  app.patch("/api/events/:eventId/participants/:participantId", async (req, res) => {
+    if (!req.isAuthenticated() || req.user.role !== "organizer") {
+      return res.status(403).json({ error: "Only organizers can update participants" });
+    }
+    
+    const eventId = parseInt(req.params.eventId);
+    const participantId = parseInt(req.params.participantId);
+    const { status, paymentStatus } = req.body;
+    
+    try {
+      const event = await storage.getEvent(eventId);
+      
+      if (!event) {
+        return res.status(404).json({ error: "Event not found" });
+      }
+      
+      if (event.organizerId !== req.user.id) {
+        return res.status(403).json({ error: "You can only update participants for your own events" });
+      }
+      
+      const participant = await storage.getEventParticipant(participantId);
+      
+      if (!participant || participant.eventId !== eventId) {
+        return res.status(404).json({ error: "Participant not found" });
+      }
+      
+      // Handle participant status changes
+      if (status) {
+        if (status === "confirmed" && participant.status !== "confirmed") {
+          // If confirming a participant, update event participant count
+          await storage.updateEventParticipantCount(eventId, event.currentParticipants + 1);
+        } else if (participant.status === "confirmed" && (status === "cancelled" || status === "rejected")) {
+          // If cancelling a confirmed participant, decrease participant count
+          await storage.updateEventParticipantCount(eventId, event.currentParticipants - 1);
+          
+          // If there are waitlisted participants, move one to confirmed
+          const waitlistedParticipants = await storage.getEventParticipantsByEvent(eventId);
+          const nextParticipant = waitlistedParticipants.find(p => p.status === "waitlisted");
+          
+          if (nextParticipant) {
+            await storage.updateEventParticipantStatus(
+              nextParticipant.id, 
+              "confirmed", 
+              nextParticipant.paymentStatus
+            );
+            
+            // Keep participant count the same (one removed, one added)
+            await storage.updateEventParticipantCount(eventId, event.currentParticipants);
+          }
+        }
+      }
+      
+      const updatedParticipant = await storage.updateEventParticipantStatus(
+        participantId, 
+        status || participant.status, 
+        paymentStatus || participant.paymentStatus
+      );
+      
+      res.json(updatedParticipant);
+    } catch (error) {
+      console.error("Error updating participant:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
   });
 
   // Booking routes
@@ -251,7 +560,7 @@ export function registerRoutes(app: Express): Server {
                 const groupMembers = await storage.getEventParticipantsByEvent(data.chatGroupId);
                 groupMembers.forEach(member => {
                   const memberWs = activeConnections.get(member.userId);
-                  if (memberWs && memberWs.readyState === ws.OPEN) {
+                  if (memberWs && memberWs.readyState === WebSocket.OPEN) {
                     memberWs.send(JSON.stringify({
                       type: 'chat_message',
                       message: chatMessage
@@ -262,7 +571,7 @@ export function registerRoutes(app: Express): Server {
               // Send to specific user if it's a direct message
               else if (data.receiverId) {
                 const receiverWs = activeConnections.get(data.receiverId);
-                if (receiverWs && receiverWs.readyState === ws.OPEN) {
+                if (receiverWs && receiverWs.readyState === WebSocket.OPEN) {
                   receiverWs.send(JSON.stringify({
                     type: 'chat_message',
                     message: chatMessage
