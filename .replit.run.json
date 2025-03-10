@@ -1,1 +1,3 @@
-{"runs": {"dev": "node --require esbuild-register server/index.ts"}}
+{
+  "run": ["bash", "start-server.sh"]
+}

@@ -1,8 +1,8 @@
 {
   "workflows": [
     {
-      "name": "dev",
-      "run": "npm run dev",
+      "name": "start",
+      "run": "bash start-server.sh",
       "default": true,
       "restartOn": {
         "watch": [

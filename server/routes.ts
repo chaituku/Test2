@@ -559,7 +559,10 @@ export function registerRoutes(app: Express): Server {
   const httpServer = createServer(app);
   
   // Setup WebSocket server
-  const wss = new WebSocket.Server({ server: httpServer, path: '/ws' });
+  // Create a WebSocket server instance
+  const WebSocketServer = WebSocket.Server;
+  const WEBSOCKET_OPEN = 1; // WEBSOCKET_OPEN constant value
+  const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
   
   // Map to store active connections
   const activeConnections = new Map();
@@ -579,7 +582,7 @@ export function registerRoutes(app: Express): Server {
       ws.isAlive = false;
       
       // Send heartbeat
-      if (ws.readyState === WebSocket.OPEN) {
+      if (ws.readyState === WEBSOCKET_OPEN) {
         ws.send(JSON.stringify({
           type: 'heartbeat',
           timestamp: Date.now()
@@ -655,7 +658,7 @@ export function registerRoutes(app: Express): Server {
                 const groupMembers = await storage.getEventParticipantsByEvent(data.chatGroupId);
                 groupMembers.forEach(member => {
                   const memberWs = activeConnections.get(member.userId);
-                  if (memberWs && memberWs.readyState === WebSocket.OPEN) {
+                  if (memberWs && memberWs.readyState === WEBSOCKET_OPEN) {
                     memberWs.send(JSON.stringify(responseData));
                   }
                 });
@@ -663,7 +666,7 @@ export function registerRoutes(app: Express): Server {
               // Send to specific user if it's a direct message
               else if (data.receiverId) {
                 const receiverWs = activeConnections.get(data.receiverId);
-                if (receiverWs && receiverWs.readyState === WebSocket.OPEN) {
+                if (receiverWs && receiverWs.readyState === WEBSOCKET_OPEN) {
                   receiverWs.send(JSON.stringify(responseData));
                 }
               }
@@ -685,7 +688,7 @@ export function registerRoutes(app: Express): Server {
               const originalSenderId = data.messageId.split('-').pop();
               if (originalSenderId) {
                 const senderWs = activeConnections.get(parseInt(originalSenderId));
-                if (senderWs && senderWs.readyState === WebSocket.OPEN) {
+                if (senderWs && senderWs.readyState === WEBSOCKET_OPEN) {
                   senderWs.send(JSON.stringify({
                     type: 'message_delivered',
                     messageId: data.messageId,
@@ -704,7 +707,7 @@ export function registerRoutes(app: Express): Server {
               const originalSenderId = data.messageId.split('-').pop();
               if (originalSenderId) {
                 const senderWs = activeConnections.get(parseInt(originalSenderId));
-                if (senderWs && senderWs.readyState === WebSocket.OPEN) {
+                if (senderWs && senderWs.readyState === WEBSOCKET_OPEN) {
                   senderWs.send(JSON.stringify({
                     type: 'message_read',
                     messageId: data.messageId,
@@ -725,7 +728,7 @@ export function registerRoutes(app: Express): Server {
               // Notify the sender that their messages were read
               if (data.senderId) {
                 const senderWs = activeConnections.get(data.senderId);
-                if (senderWs && senderWs.readyState === WebSocket.OPEN) {
+                if (senderWs && senderWs.readyState === WEBSOCKET_OPEN) {
                   senderWs.send(JSON.stringify({
                     type: 'message_read',
                     userId: data.userId,
@@ -746,7 +749,7 @@ export function registerRoutes(app: Express): Server {
                 groupMembers.forEach(member => {
                   if (member.userId !== data.userId) {
                     const memberWs = activeConnections.get(member.userId);
-                    if (memberWs && memberWs.readyState === WebSocket.OPEN) {
+                    if (memberWs && memberWs.readyState === WEBSOCKET_OPEN) {
                       memberWs.send(JSON.stringify({
                         type: data.type,
                         userId: data.userId,
@@ -759,7 +762,7 @@ export function registerRoutes(app: Express): Server {
               } else if (data.recipientId) {
                 // Send typing status to specific recipient
                 const recipientWs = activeConnections.get(data.recipientId);
-                if (recipientWs && recipientWs.readyState === WebSocket.OPEN) {
+                if (recipientWs && recipientWs.readyState === WEBSOCKET_OPEN) {
                   recipientWs.send(JSON.stringify({
                     type: data.type,
                     userId: data.userId,

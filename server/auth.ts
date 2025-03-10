@@ -1,5 +1,8 @@
 import passport from "passport";
 import { Strategy as LocalStrategy } from "passport-local";
+import { Strategy as GoogleStrategy } from "passport-google-oauth20";
+import { Strategy as FacebookStrategy } from "passport-facebook";
+import { Strategy as AppleStrategy } from "passport-apple";
 import { Express } from "express";
 import session from "express-session";
 import { scrypt, randomBytes, timingSafeEqual } from "crypto";
@@ -61,6 +64,122 @@ export function setupAuth(app: Express) {
       }
     }),
   );
+  
+  // Google OAuth Strategy
+  if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
+    passport.use(
+      new GoogleStrategy(
+        {
+          clientID: process.env.GOOGLE_CLIENT_ID,
+          clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+          callbackURL: "/api/auth/google/callback",
+          scope: ["profile", "email"],
+        },
+        async (accessToken, refreshToken, profile, done) => {
+          try {
+            // Check if user exists with this Google ID
+            let user = await storage.getUserByUsername(`google_${profile.id}`);
+            
+            if (!user) {
+              // Create new user
+              const email = profile.emails && profile.emails[0] ? profile.emails[0].value : '';
+              const name = profile.displayName || '';
+              
+              user = await storage.createUser({
+                username: `google_${profile.id}`,
+                email: email,
+                password: await hashPassword(randomBytes(16).toString("hex")), // Random password as they'll login via Google
+                role: "user",
+                // Any other default fields
+              });
+            }
+            
+            return done(null, user);
+          } catch (err) {
+            return done(err);
+          }
+        }
+      )
+    );
+  }
+
+  // Facebook Strategy
+  if (process.env.FACEBOOK_APP_ID && process.env.FACEBOOK_APP_SECRET) {
+    passport.use(
+      new FacebookStrategy(
+        {
+          clientID: process.env.FACEBOOK_APP_ID,
+          clientSecret: process.env.FACEBOOK_APP_SECRET,
+          callbackURL: "/api/auth/facebook/callback",
+          profileFields: ["id", "emails", "name"],
+        },
+        async (accessToken, refreshToken, profile, done) => {
+          try {
+            // Check if user exists with this Facebook ID
+            let user = await storage.getUserByUsername(`facebook_${profile.id}`);
+            
+            if (!user) {
+              // Create new user
+              const email = profile.emails && profile.emails[0] ? profile.emails[0].value : '';
+              const name = profile.displayName || '';
+              
+              user = await storage.createUser({
+                username: `facebook_${profile.id}`,
+                email: email,
+                password: await hashPassword(randomBytes(16).toString("hex")), // Random password as they'll login via Facebook
+                role: "user",
+                // Any other default fields
+              });
+            }
+            
+            return done(null, user);
+          } catch (err) {
+            return done(err);
+          }
+        }
+      )
+    );
+  }
+
+  // Apple Strategy
+  if (process.env.APPLE_CLIENT_ID && process.env.APPLE_TEAM_ID && process.env.APPLE_KEY_ID && process.env.APPLE_PRIVATE_KEY) {
+    passport.use(
+      new AppleStrategy(
+        {
+          clientID: process.env.APPLE_CLIENT_ID,
+          teamID: process.env.APPLE_TEAM_ID,
+          keyID: process.env.APPLE_KEY_ID,
+          privateKeyString: process.env.APPLE_PRIVATE_KEY,
+          callbackURL: "/api/auth/apple/callback",
+          passReqToCallback: true,
+        },
+        async (req, accessToken, refreshToken, idToken, profile, done) => {
+          try {
+            // Apple's profile contains very limited information
+            const { sub: appleId, email } = idToken;
+            
+            // Check if user exists
+            let user = await storage.getUserByUsername(`apple_${appleId}`);
+            
+            if (!user) {
+              // Create new user with limited info from Apple
+              user = await storage.createUser({
+                username: `apple_${appleId}`,
+                email: email || '',
+                password: await hashPassword(randomBytes(16).toString("hex")), // Random password as they'll login via Apple
+                role: "user",
+                // Any other default fields
+              });
+            }
+            
+            return done(null, user);
+          } catch (err) {
+            return done(err);
+          }
+        }
+      )
+    );
+  }
 
   passport.serializeUser((user, done) => done(null, user.id));
   passport.deserializeUser(async (id: number, done) => {
@@ -117,4 +236,53 @@ export function setupAuth(app: Express) {
     if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
     res.json(req.user);
   });
+  
+  // Social login routes
+  if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
+    // Google authentication routes
+    app.get(
+      "/api/auth/google",
+      passport.authenticate("google", { scope: ["email", "profile"] })
+    );
+
+    app.get(
+      "/api/auth/google/callback",
+      passport.authenticate("google", {
+        successRedirect: "/",
+        failureRedirect: "/auth",
+      })
+    );
+  }
+  
+  if (process.env.FACEBOOK_APP_ID && process.env.FACEBOOK_APP_SECRET) {
+    // Facebook authentication routes
+    app.get(
+      "/api/auth/facebook",
+      passport.authenticate("facebook", { scope: ["email"] })
+    );
+
+    app.get(
+      "/api/auth/facebook/callback",
+      passport.authenticate("facebook", {
+        successRedirect: "/",
+        failureRedirect: "/auth",
+      })
+    );
+  }
+  
+  if (process.env.APPLE_CLIENT_ID && process.env.APPLE_TEAM_ID && process.env.APPLE_KEY_ID && process.env.APPLE_PRIVATE_KEY) {
+    // Apple authentication routes
+    app.get(
+      "/api/auth/apple",
+      passport.authenticate("apple")
+    );
+
+    app.get(
+      "/api/auth/apple/callback",
+      passport.authenticate("apple", {
+        successRedirect: "/",
+        failureRedirect: "/auth",
+      })
+    );
+  }
 }
