@@ -259,7 +259,6 @@
     "resolve": "^1.22.8",
     "resolve-pkg-maps": "^1.0.0",
     "reusify": "^1.0.4",
-    "rollup": "^4.24.4",
     "run-parallel": "^1.2.0",
     "safe-buffer": "^5.2.1",
     "safer-buffer": "^2.1.2",
@@ -322,5 +321,8 @@
     "yaml": "^2.6.0",
     "zod": "^3.24.2",
     "zod-validation-error": "^3.4.0"
+  },
+  "devDependencies": {
+    "rollup": "^4.35.0"
   }
 }

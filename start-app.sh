@@ -6,4 +6,4 @@ npx vite build client
 
 # Start the server
 echo "Starting server..."
-node --require esbuild-register server/index.ts
+node --require esbuild-register ./server/index.ts
