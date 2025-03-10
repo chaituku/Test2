@@ -3,6 +3,20 @@
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
+  "scripts": {
+    "dev": "node dev.js",
+    "start": "bash start-app.sh",
+    "server": "bash start-server.sh",
+    "build": "npx vite build client",
+    "db:push": "drizzle-kit push:pg",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
   "dependencies": {
     "@hookform/resolvers": "^4.1.3",
     "@tanstack/react-query": "^5.67.2",
@@ -311,11 +325,5 @@
     "yaml": "^2.6.0",
     "zod": "^3.24.2",
     "zod-validation-error": "^3.4.0"
-  },
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC"
+  }
 }
