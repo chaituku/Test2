@@ -8,7 +8,8 @@ import {
   User, 
   LogOut, 
   MessageSquare,
-  Building2
+  Building2,
+  Trophy
 } from 'lucide-react';
 import { Button } from '../ui/button';
 
@@ -28,6 +29,7 @@ export function AppLayout({ children }: AppLayoutProps) {
   const navItems = [
     { path: '/', label: 'Home', icon: <Home className="w-5 h-5 mr-2" /> },
     { path: '/bookings', label: 'Bookings', icon: <CalendarDays className="w-5 h-5 mr-2" /> },
+    { path: '/events', label: 'Events', icon: <Trophy className="w-5 h-5 mr-2" /> },
     { path: '/chat', label: 'Messages', icon: <MessageSquare className="w-5 h-5 mr-2" /> },
   ];
 

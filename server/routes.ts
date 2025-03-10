@@ -1,819 +1,767 @@
-import type { Express } from "express";
-import { createServer, type Server } from "http";
-import * as WebSocket from "ws";
+import { Express } from "express";
+import { createServer, Server } from "http";
+import { WebSocketServer } from "ws";
 import { setupAuth } from "./auth";
 import { storage } from "./storage";
-import crypto from "crypto";
-
-// Helper functions for message encryption/decryption
-const encryptMessage = (message: string): string => {
-  try {
-    // Use environment variable for key or fallback to a default (in production, never use a default)
-    const key = process.env.MESSAGE_ENCRYPTION_KEY || 'badminton-platform-secure-communications-key';
-    const iv = crypto.randomBytes(16);
-    const cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(key.slice(0, 32)), iv);
-    
-    let encrypted = cipher.update(message, 'utf8', 'hex');
-    encrypted += cipher.final('hex');
-    
-    // Return IV concatenated with the encrypted message (IV is needed for decryption)
-    return iv.toString('hex') + ':' + encrypted;
-  } catch (error) {
-    console.error('Error encrypting message:', error);
-    return message; // Fallback to unencrypted if encryption fails
-  }
-};
-
-const decryptMessage = (encryptedMessage: string): string => {
-  try {
-    const key = process.env.MESSAGE_ENCRYPTION_KEY || 'badminton-platform-secure-communications-key';
-    
-    // Split IV and encrypted message
-    const parts = encryptedMessage.split(':');
-    if (parts.length !== 2) {
-      return encryptedMessage; // Not in expected format, return as is
-    }
-    
-    const iv = Buffer.from(parts[0], 'hex');
-    const encrypted = parts[1];
-    
-    const decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(key.slice(0, 32)), iv);
-    
-    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
-    
-    return decrypted;
-  } catch (error) {
-    console.error('Error decrypting message:', error);
-    return 'Message could not be decrypted'; // Provide feedback if decryption fails
-  }
-};
+import { eq, and, gt, lt, between } from "drizzle-orm";
+import { 
+  insertBusinessSchema, 
+  insertCourtSchema,
+  insertBookingSchema,
+  insertEventSchema,
+  insertEventParticipantSchema,
+  insertPaymentSchema,
+  insertChatMessageSchema,
+  insertChatGroupSchema
+} from "@shared/schema";
 
 export function registerRoutes(app: Express): Server {
-  // Sets up authentication routes (/api/register, /api/login, /api/logout, /api/user)
+  // Set up authentication routes
   setupAuth(app);
-
+  
+  // Create HTTP server for both API and WebSockets
+  const httpServer = createServer(app);
+  
+  // Set up WebSocket server
+  const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+  
+  wss.on('connection', (ws) => {
+    console.log('Client connected to WebSocket');
+    
+    ws.on('message', (message) => {
+      try {
+        const data = JSON.parse(message.toString());
+        console.log('Received message:', data);
+        
+        // Echo back for now - will implement proper handling in future
+        ws.send(JSON.stringify({
+          type: 'message_delivered',
+          messageId: data.messageId,
+          timestamp: Date.now()
+        }));
+      } catch (error) {
+        console.error('Error processing message:', error);
+      }
+    });
+    
+    ws.on('close', () => {
+      console.log('Client disconnected from WebSocket');
+    });
+  });
+  
+  // API Routes
+  
   // Business routes
   app.get("/api/businesses", async (req, res) => {
-    if (!req.isAuthenticated()) return res.status(401).json({ error: "Unauthorized" });
-    
-    // If user is business owner, return their businesses
-    if (req.user.role === "business") {
-      const businesses = await storage.getBusinessesByOwner(req.user.id);
-      return res.json(businesses);
+    try {
+      if (req.user && req.user.role === "business") {
+        const businesses = await storage.getBusinessesByOwner(req.user.id);
+        return res.json(businesses);
+      } else {
+        // For regular users, return all businesses
+        // This would likely be paginated and filtered in a real application
+        // For now, we'll return a limited number
+        const businesses = await storage.getBusinessesByOwner(0); // Special case for demo only
+        return res.json(businesses);
+      }
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: "Server error" });
     }
-    
-    // If regular user, return an empty array for now 
-    // (in a real app, we might show publicly visible businesses)
-    return res.json([]);
   });
-
-  app.post("/api/businesses", async (req, res) => {
-    if (!req.isAuthenticated() || req.user.role !== "business") {
-      return res.status(403).json({ error: "Only business owners can create businesses" });
-    }
-    
-    const business = await storage.createBusiness({
-      ...req.body,
-      ownerId: req.user.id,
-    });
-    
-    res.status(201).json(business);
-  });
-
+  
   app.get("/api/businesses/:id", async (req, res) => {
-    const id = parseInt(req.params.id);
-    const business = await storage.getBusiness(id);
-    
-    if (!business) {
-      return res.status(404).json({ error: "Business not found" });
+    try {
+      const businessId = parseInt(req.params.id);
+      if (isNaN(businessId)) {
+        return res.status(400).json({ error: "Invalid business ID" });
+      }
+      
+      const business = await storage.getBusiness(businessId);
+      if (!business) {
+        return res.status(404).json({ error: "Business not found" });
+      }
+      
+      // Check if the user is authorized to see this business's details
+      if (req.user && (req.user.role === "business" && req.user.id !== business.ownerId)) {
+        return res.status(403).json({ error: "Unauthorized" });
+      }
+      
+      return res.json(business);
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: "Server error" });
     }
-    
-    // Business owners can only view their own businesses
-    if (req.user.role === "business" && business.ownerId !== req.user.id) {
-      return res.status(403).json({ error: "Access denied" });
-    }
-    
-    res.json(business);
   });
-
+  
+  app.post("/api/businesses", async (req, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      
+      if (req.user.role !== "business") {
+        return res.status(403).json({ error: "Only business accounts can create businesses" });
+      }
+      
+      const validationResult = insertBusinessSchema.safeParse(req.body);
+      if (!validationResult.success) {
+        return res.status(400).json({ error: validationResult.error.errors });
+      }
+      
+      const businessData = {
+        ...validationResult.data,
+        ownerId: req.user.id
+      };
+      
+      const business = await storage.createBusiness(businessData);
+      return res.status(201).json(business);
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: "Server error" });
+    }
+  });
+  
   // Court routes
   app.get("/api/businesses/:businessId/courts", async (req, res) => {
-    const businessId = parseInt(req.params.businessId);
-    const business = await storage.getBusiness(businessId);
-    
-    if (!business) {
-      return res.status(404).json({ error: "Business not found" });
+    try {
+      const businessId = parseInt(req.params.businessId);
+      if (isNaN(businessId)) {
+        return res.status(400).json({ error: "Invalid business ID" });
+      }
+      
+      const business = await storage.getBusiness(businessId);
+      if (!business) {
+        return res.status(404).json({ error: "Business not found" });
+      }
+      
+      // Check if the user is authorized
+      if (req.user && req.user.role === "business" && req.user.id !== business.ownerId) {
+        return res.status(403).json({ error: "Unauthorized" });
+      }
+      
+      const courts = await storage.getCourtsByBusiness(businessId);
+      return res.json(courts);
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: "Server error" });
     }
-    
-    // Business owners can only view courts in their own businesses
-    if (req.user?.role === "business" && business.ownerId !== req.user.id) {
-      return res.status(403).json({ error: "Access denied" });
-    }
-    
-    const courts = await storage.getCourtsByBusiness(businessId);
-    res.json(courts);
   });
-
+  
   app.post("/api/businesses/:businessId/courts", async (req, res) => {
-    if (!req.isAuthenticated() || req.user.role !== "business") {
-      return res.status(403).json({ error: "Only business owners can create courts" });
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      
+      const businessId = parseInt(req.params.businessId);
+      if (isNaN(businessId)) {
+        return res.status(400).json({ error: "Invalid business ID" });
+      }
+      
+      const business = await storage.getBusiness(businessId);
+      if (!business) {
+        return res.status(404).json({ error: "Business not found" });
+      }
+      
+      // Check if user owns this business
+      if (req.user.role !== "business" || req.user.id !== business.ownerId) {
+        return res.status(403).json({ error: "Unauthorized" });
+      }
+      
+      const validationResult = insertCourtSchema.safeParse(req.body);
+      if (!validationResult.success) {
+        return res.status(400).json({ error: validationResult.error.errors });
+      }
+      
+      const courtData = {
+        ...validationResult.data,
+        businessId
+      };
+      
+      const court = await storage.createCourt(courtData);
+      return res.status(201).json(court);
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: "Server error" });
     }
-    
-    const businessId = parseInt(req.params.businessId);
-    const business = await storage.getBusiness(businessId);
-    
-    if (!business) {
-      return res.status(404).json({ error: "Business not found" });
-    }
-    
-    if (business.ownerId !== req.user.id) {
-      return res.status(403).json({ error: "You can only create courts for your own business" });
-    }
-    
-    const court = await storage.createCourt({
-      ...req.body,
-      businessId,
-    });
-    
-    res.status(201).json(court);
   });
-
+  
   app.patch("/api/courts/:id/availability", async (req, res) => {
-    if (!req.isAuthenticated() || req.user.role !== "business") {
-      return res.status(403).json({ error: "Only business owners can update court availability" });
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      
+      const courtId = parseInt(req.params.id);
+      if (isNaN(courtId)) {
+        return res.status(400).json({ error: "Invalid court ID" });
+      }
+      
+      const court = await storage.getCourt(courtId);
+      if (!court) {
+        return res.status(404).json({ error: "Court not found" });
+      }
+      
+      const business = await storage.getBusiness(court.businessId);
+      if (!business) {
+        return res.status(404).json({ error: "Business not found" });
+      }
+      
+      // Check if user owns this business
+      if (req.user.role !== "business" || req.user.id !== business.ownerId) {
+        return res.status(403).json({ error: "Unauthorized" });
+      }
+      
+      const { isAvailable } = req.body;
+      if (typeof isAvailable !== 'boolean') {
+        return res.status(400).json({ error: "isAvailable must be a boolean" });
+      }
+      
+      const updatedCourt = await storage.updateCourtAvailability(courtId, isAvailable);
+      return res.json(updatedCourt);
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: "Server error" });
     }
-    
-    const id = parseInt(req.params.id);
-    const { isAvailable } = req.body;
-    
-    if (typeof isAvailable !== "boolean") {
-      return res.status(400).json({ error: "isAvailable must be a boolean" });
-    }
-    
-    const court = await storage.getCourt(id);
-    
-    if (!court) {
-      return res.status(404).json({ error: "Court not found" });
-    }
-    
-    const business = await storage.getBusiness(court.businessId);
-    
-    if (business?.ownerId !== req.user.id) {
-      return res.status(403).json({ error: "You can only update courts in your own business" });
-    }
-    
-    const updatedCourt = await storage.updateCourtAvailability(id, isAvailable);
-    res.json(updatedCourt);
   });
-
+  
   // Event routes
   app.get("/api/events", async (req, res) => {
     try {
-      const events = await storage.getUpcomingEvents();
-      res.json(events);
+      const { type, upcoming } = req.query;
+      
+      let events;
+      if (type) {
+        events = await storage.getEventsByType(type as string);
+      } else if (upcoming === 'true') {
+        events = await storage.getUpcomingEvents();
+      } else if (req.user && req.user.role === "organizer") {
+        events = await storage.getEventsByOrganizer(req.user.id);
+      } else {
+        events = await storage.getUpcomingEvents();
+      }
+      
+      // Add some computed properties for the frontend
+      const enhancedEvents = await Promise.all(events.map(async (event) => {
+        const participants = await storage.getEventParticipantsByEvent(event.id);
+        return {
+          ...event,
+          currentParticipants: participants.length,
+          maxParticipants: event.capacity,
+          price: event.fee
+        };
+      }));
+      
+      return res.json(enhancedEvents);
     } catch (error) {
-      console.error("Error getting events:", error);
-      res.status(500).json({ error: "Internal server error" });
+      console.error(error);
+      return res.status(500).json({ error: "Server error" });
     }
   });
-
-  app.get("/api/events/organizer", async (req, res) => {
-    if (!req.isAuthenticated()) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-    
-    try {
-      const events = await storage.getEventsByOrganizer(req.user.id);
-      res.json(events);
-    } catch (error) {
-      console.error("Error getting organizer events:", error);
-      res.status(500).json({ error: "Internal server error" });
-    }
-  });
-
+  
   app.post("/api/events", async (req, res) => {
-    if (!req.isAuthenticated() || req.user.role !== "organizer") {
-      return res.status(403).json({ error: "Only organizers can create events" });
-    }
-    
     try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      
+      if (req.user.role !== "organizer") {
+        return res.status(403).json({ error: "Only organizers can create events" });
+      }
+      
+      const validationResult = insertEventSchema.safeParse(req.body);
+      if (!validationResult.success) {
+        return res.status(400).json({ error: validationResult.error.errors });
+      }
+      
       const eventData = {
-        ...req.body,
-        organizerId: req.user.id,
-        status: "open", // Initial status is open for enrollment
-        currentParticipants: 0
+        ...validationResult.data,
+        organizerId: req.user.id
       };
       
       const event = await storage.createEvent(eventData);
-      res.status(201).json(event);
+      return res.status(201).json(event);
     } catch (error) {
-      console.error("Error creating event:", error);
-      res.status(500).json({ error: "Internal server error" });
+      console.error(error);
+      return res.status(500).json({ error: "Server error" });
     }
   });
-
-  app.patch("/api/events/:id/status", async (req, res) => {
-    if (!req.isAuthenticated() || req.user.role !== "organizer") {
-      return res.status(403).json({ error: "Only organizers can update event status" });
-    }
-    
-    const eventId = parseInt(req.params.id);
-    const { status } = req.body;
-    
-    if (!["open", "closed", "cancelled", "completed"].includes(status)) {
-      return res.status(400).json({ error: "Invalid status value" });
-    }
-    
+  
+  app.get("/api/events/:id", async (req, res) => {
     try {
-      const event = await storage.getEvent(eventId);
+      const eventId = parseInt(req.params.id);
+      if (isNaN(eventId)) {
+        return res.status(400).json({ error: "Invalid event ID" });
+      }
       
+      const event = await storage.getEvent(eventId);
       if (!event) {
         return res.status(404).json({ error: "Event not found" });
       }
       
-      if (event.organizerId !== req.user.id) {
-        return res.status(403).json({ error: "You can only update your own events" });
+      const participants = await storage.getEventParticipantsByEvent(eventId);
+      
+      // Add some computed properties for the frontend
+      const enhancedEvent = {
+        ...event,
+        currentParticipants: participants.length,
+        maxParticipants: event.capacity,
+        price: event.fee,
+        allowDirectCancellation: event.status === 'open' // Only allow cancellation if event is still open
+      };
+      
+      return res.json(enhancedEvent);
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: "Server error" });
+    }
+  });
+  
+  app.patch("/api/events/:id", async (req, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      
+      const eventId = parseInt(req.params.id);
+      if (isNaN(eventId)) {
+        return res.status(400).json({ error: "Invalid event ID" });
+      }
+      
+      const event = await storage.getEvent(eventId);
+      if (!event) {
+        return res.status(404).json({ error: "Event not found" });
+      }
+      
+      // Check if user is the organizer
+      if (req.user.role !== "organizer" || req.user.id !== event.organizerId) {
+        return res.status(403).json({ error: "Unauthorized" });
+      }
+      
+      const { status } = req.body;
+      if (!status || typeof status !== 'string') {
+        return res.status(400).json({ error: "Status is required" });
+      }
+      
+      // If cancelling, check if there are participants
+      if (status === 'cancelled') {
+        const participants = await storage.getEventParticipantsByEvent(eventId);
+        if (participants.length > 0) {
+          // In a real app, would handle refunds and notifications here
+          // For now, we'll just update the status
+          const updatedEvent = await storage.updateEventStatus(eventId, status);
+          
+          // Update all participants to cancelled
+          for (const participant of participants) {
+            await storage.updateEventParticipantStatus(participant.id, 'cancelled', participant.paymentStatus);
+          }
+          
+          return res.json(updatedEvent);
+        }
       }
       
       const updatedEvent = await storage.updateEventStatus(eventId, status);
-      res.json(updatedEvent);
+      return res.json(updatedEvent);
     } catch (error) {
-      console.error("Error updating event status:", error);
-      res.status(500).json({ error: "Internal server error" });
+      console.error(error);
+      return res.status(500).json({ error: "Server error" });
     }
   });
-
-  app.get("/api/events/:id/participants", async (req, res) => {
-    if (!req.isAuthenticated()) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-    
-    const eventId = parseInt(req.params.id);
-    
+  
+  // Event participation routes
+  app.post("/api/events/:eventId/participants", async (req, res) => {
     try {
-      const event = await storage.getEvent(eventId);
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
       
+      const eventId = parseInt(req.params.eventId);
+      if (isNaN(eventId)) {
+        return res.status(400).json({ error: "Invalid event ID" });
+      }
+      
+      const event = await storage.getEvent(eventId);
       if (!event) {
         return res.status(404).json({ error: "Event not found" });
       }
       
-      // Only the organizer or a participant can view the participant list
-      const isOrganizer = event.organizerId === req.user.id;
+      // Check if event is open for registration
+      if (event.status !== 'open') {
+        return res.status(400).json({ error: "Event is not open for registration" });
+      }
+      
+      // Check if event is at capacity
       const participants = await storage.getEventParticipantsByEvent(eventId);
-      const isParticipant = participants.some(p => p.userId === req.user.id);
-      
-      if (!isOrganizer && !isParticipant) {
-        return res.status(403).json({ error: "Access denied" });
+      if (event.capacity && participants.length >= event.capacity) {
+        return res.status(400).json({ error: "Event is at capacity" });
       }
       
-      res.json(participants);
-    } catch (error) {
-      console.error("Error getting event participants:", error);
-      res.status(500).json({ error: "Internal server error" });
-    }
-  });
-
-  app.post("/api/events/:id/enroll", async (req, res) => {
-    if (!req.isAuthenticated()) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-    
-    const eventId = parseInt(req.params.id);
-    
-    try {
-      const event = await storage.getEvent(eventId);
-      
-      if (!event) {
-        return res.status(404).json({ error: "Event not found" });
-      }
-      
-      if (event.status !== "open") {
-        return res.status(400).json({ error: "Event is not open for enrollment" });
-      }
-      
-      // Check if user is already enrolled
-      const participants = await storage.getEventParticipantsByEvent(eventId);
+      // Check if user is already registered
       const existingParticipant = participants.find(p => p.userId === req.user.id);
-      
       if (existingParticipant) {
-        return res.status(400).json({ error: "You are already enrolled in this event" });
+        return res.status(400).json({ error: "Already registered for this event" });
       }
       
-      // Determine if user should be added to waitlist
-      const isWaitlisted = event.currentParticipants >= event.maxParticipants;
-      const participantStatus = isWaitlisted ? "waitlisted" : "confirmed";
-      
-      // Create participant record
-      const participant = await storage.createEventParticipant({
+      const validationResult = insertEventParticipantSchema.safeParse({
         eventId,
         userId: req.user.id,
-        status: participantStatus,
-        paymentStatus: event.price > 0 ? "pending" : "not_required"
+        status: 'registered',
+        paymentStatus: event.fee ? 'pending' : 'not_required'
       });
       
-      // Update event participant count if not waitlisted
-      if (!isWaitlisted) {
-        await storage.updateEventParticipantCount(eventId, event.currentParticipants + 1);
+      if (!validationResult.success) {
+        return res.status(400).json({ error: validationResult.error.errors });
       }
       
-      res.status(201).json(participant);
+      const participant = await storage.createEventParticipant(validationResult.data);
+      
+      // Update participant count
+      await storage.updateEventParticipantCount(eventId, participants.length + 1);
+      
+      // If event requires payment, create a payment record
+      if (event.fee) {
+        const paymentData = {
+          userId: req.user.id,
+          eventId,
+          amount: event.fee,
+          status: 'pending'
+        };
+        
+        await storage.createPayment(paymentData);
+      }
+      
+      return res.status(201).json(participant);
     } catch (error) {
-      console.error("Error enrolling in event:", error);
-      res.status(500).json({ error: "Internal server error" });
+      console.error(error);
+      return res.status(500).json({ error: "Server error" });
     }
   });
-
-  app.post("/api/events/:id/unenroll", async (req, res) => {
-    if (!req.isAuthenticated()) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-    
-    const eventId = parseInt(req.params.id);
-    
+  
+  app.delete("/api/events/:eventId/participants/:participantId", async (req, res) => {
     try {
-      const event = await storage.getEvent(eventId);
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
       
+      const eventId = parseInt(req.params.eventId);
+      const participantId = parseInt(req.params.participantId);
+      
+      if (isNaN(eventId) || isNaN(participantId)) {
+        return res.status(400).json({ error: "Invalid IDs" });
+      }
+      
+      const event = await storage.getEvent(eventId);
       if (!event) {
         return res.status(404).json({ error: "Event not found" });
-      }
-      
-      // Check if user is enrolled
-      const participants = await storage.getEventParticipantsByEvent(eventId);
-      const existingParticipant = participants.find(p => p.userId === req.user.id);
-      
-      if (!existingParticipant) {
-        return res.status(400).json({ error: "You are not enrolled in this event" });
-      }
-      
-      // Process unenrollment based on current status
-      if (existingParticipant.status === "waitlisted") {
-        // Waitlisted users can always unenroll
-        await storage.updateEventParticipantStatus(
-          existingParticipant.id, 
-          "cancelled", 
-          existingParticipant.paymentStatus
-        );
-        
-        res.json({ message: "Successfully unenrolled from waitlist" });
-      } else if (existingParticipant.status === "confirmed") {
-        // For confirmed participants, check if there's a waitlist
-        const waitlistedParticipants = participants.filter(p => p.status === "waitlisted");
-        
-        if (waitlistedParticipants.length > 0) {
-          // If there are waitlisted participants, move the first one to confirmed
-          const nextParticipant = waitlistedParticipants[0];
-          await storage.updateEventParticipantStatus(
-            nextParticipant.id, 
-            "confirmed", 
-            nextParticipant.paymentStatus
-          );
-          
-          // Update the current participant to cancelled
-          await storage.updateEventParticipantStatus(
-            existingParticipant.id, 
-            "cancelled", 
-            existingParticipant.paymentStatus
-          );
-          
-          res.json({ message: "Successfully unenrolled. A waitlisted participant has been confirmed." });
-        } else {
-          // If no waitlist, check if event allows direct cancellation
-          if (event.allowDirectCancellation) {
-            await storage.updateEventParticipantStatus(
-              existingParticipant.id, 
-              "cancelled", 
-              existingParticipant.paymentStatus
-            );
-            
-            // Decrease participant count
-            await storage.updateEventParticipantCount(eventId, event.currentParticipants - 1);
-            
-            res.json({ message: "Successfully unenrolled from event" });
-          } else {
-            // Request organizer approval for cancellation
-            await storage.updateEventParticipantStatus(
-              existingParticipant.id, 
-              "pending_cancellation", 
-              existingParticipant.paymentStatus
-            );
-            
-            res.json({ message: "Cancellation request submitted to the organizer" });
-          }
-        }
-      } else {
-        res.status(400).json({ error: "Cannot unenroll with current status: " + existingParticipant.status });
-      }
-    } catch (error) {
-      console.error("Error unenrolling from event:", error);
-      res.status(500).json({ error: "Internal server error" });
-    }
-  });
-
-  app.patch("/api/events/:eventId/participants/:participantId", async (req, res) => {
-    if (!req.isAuthenticated() || req.user.role !== "organizer") {
-      return res.status(403).json({ error: "Only organizers can update participants" });
-    }
-    
-    const eventId = parseInt(req.params.eventId);
-    const participantId = parseInt(req.params.participantId);
-    const { status, paymentStatus } = req.body;
-    
-    try {
-      const event = await storage.getEvent(eventId);
-      
-      if (!event) {
-        return res.status(404).json({ error: "Event not found" });
-      }
-      
-      if (event.organizerId !== req.user.id) {
-        return res.status(403).json({ error: "You can only update participants for your own events" });
       }
       
       const participant = await storage.getEventParticipant(participantId);
-      
       if (!participant || participant.eventId !== eventId) {
         return res.status(404).json({ error: "Participant not found" });
       }
       
-      // Handle participant status changes
-      if (status) {
-        if (status === "confirmed" && participant.status !== "confirmed") {
-          // If confirming a participant, update event participant count
-          await storage.updateEventParticipantCount(eventId, event.currentParticipants + 1);
-        } else if (participant.status === "confirmed" && (status === "cancelled" || status === "rejected")) {
-          // If cancelling a confirmed participant, decrease participant count
-          await storage.updateEventParticipantCount(eventId, event.currentParticipants - 1);
-          
-          // If there are waitlisted participants, move one to confirmed
-          const waitlistedParticipants = await storage.getEventParticipantsByEvent(eventId);
-          const nextParticipant = waitlistedParticipants.find(p => p.status === "waitlisted");
-          
-          if (nextParticipant) {
-            await storage.updateEventParticipantStatus(
-              nextParticipant.id, 
-              "confirmed", 
-              nextParticipant.paymentStatus
-            );
-            
-            // Keep participant count the same (one removed, one added)
-            await storage.updateEventParticipantCount(eventId, event.currentParticipants);
-          }
-        }
+      // Check if user is authorized (either the participant or the event organizer)
+      if (req.user.role !== "organizer" && req.user.id !== participant.userId) {
+        return res.status(403).json({ error: "Unauthorized" });
       }
       
+      // If event has already started, only the organizer can cancel
+      const now = new Date();
+      if (event.startDate <= now && req.user.role !== "organizer") {
+        return res.status(400).json({ error: "Cannot cancel after event has started" });
+      }
+      
+      // Update participant status to cancelled
       const updatedParticipant = await storage.updateEventParticipantStatus(
         participantId, 
-        status || participant.status, 
-        paymentStatus || participant.paymentStatus
+        'cancelled', 
+        participant.paymentStatus
       );
       
-      res.json(updatedParticipant);
+      // Update participant count
+      const participants = await storage.getEventParticipantsByEvent(eventId);
+      const activeParticipants = participants.filter(p => p.status !== 'cancelled');
+      await storage.updateEventParticipantCount(eventId, activeParticipants.length);
+      
+      return res.json(updatedParticipant);
     } catch (error) {
-      console.error("Error updating participant:", error);
-      res.status(500).json({ error: "Internal server error" });
+      console.error(error);
+      return res.status(500).json({ error: "Server error" });
     }
   });
-
+  
   // Booking routes
-  app.get("/api/bookings/user", async (req, res) => {
-    if (!req.isAuthenticated()) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-    
-    const bookings = await storage.getBookingsByUser(req.user.id);
-    res.json(bookings);
-  });
-
-  app.get("/api/courts/:courtId/bookings", async (req, res) => {
-    const courtId = parseInt(req.params.courtId);
-    const court = await storage.getCourt(courtId);
-    
-    if (!court) {
-      return res.status(404).json({ error: "Court not found" });
-    }
-    
-    // If user is a business owner, check if they own the business
-    if (req.user?.role === "business") {
-      const business = await storage.getBusiness(court.businessId);
-      if (business?.ownerId !== req.user.id) {
-        return res.status(403).json({ error: "Access denied" });
-      }
-    }
-    
-    const bookings = await storage.getBookingsByCourt(courtId);
-    res.json(bookings);
-  });
-
-  app.post("/api/courts/:courtId/bookings", async (req, res) => {
-    if (!req.isAuthenticated()) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-    
-    const courtId = parseInt(req.params.courtId);
-    const court = await storage.getCourt(courtId);
-    
-    if (!court) {
-      return res.status(404).json({ error: "Court not found" });
-    }
-    
-    if (!court.isAvailable) {
-      return res.status(400).json({ error: "This court is not available for booking" });
-    }
-    
-    const { startTime, endTime } = req.body;
-    const startDate = new Date(startTime);
-    const endDate = new Date(endTime);
-    
-    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
-      return res.status(400).json({ error: "Invalid start or end time" });
-    }
-    
-    if (startDate >= endDate) {
-      return res.status(400).json({ error: "End time must be after start time" });
-    }
-    
-    // Check if there's a 30-minute difference
-    const diffMinutes = (endDate.getTime() - startDate.getTime()) / (1000 * 60);
-    if (diffMinutes !== 30) {
-      return res.status(400).json({ error: "Booking must be for a 30-minute time slot" });
-    }
-    
-    // Check for overlapping bookings
-    const overlappingBookings = await storage.getBookingsByTimeRange(courtId, startDate, endDate);
-    if (overlappingBookings.length > 0) {
-      return res.status(400).json({ error: "This time slot is already booked" });
-    }
-    
-    const booking = await storage.createBooking({
-      courtId,
-      userId: req.user.id,
-      startTime: startDate,
-      endTime: endDate,
-      status: "confirmed",
-    });
-    
-    res.status(201).json(booking);
-  });
-
-  const httpServer = createServer(app);
-  
-  // Setup WebSocket server
-  // Create a WebSocket server instance
-  const WebSocketServer = WebSocket.Server;
-  const WEBSOCKET_OPEN = 1; // WEBSOCKET_OPEN constant value
-  const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
-  
-  // Map to store active connections
-  const activeConnections = new Map();
-
-  // Heartbeat interval in milliseconds (30 seconds)
-  const HEARTBEAT_INTERVAL = 30000;
-  
-  // Start server heartbeat
-  const heartbeatInterval = setInterval(() => {
-    wss.clients.forEach((ws) => {
-      if (ws.isAlive === false) {
-        // If client didn't respond to previous heartbeat, terminate
-        return ws.terminate();
+  app.get("/api/bookings", async (req, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
       }
       
-      // Mark as not alive until pong is received
-      ws.isAlive = false;
-      
-      // Send heartbeat
-      if (ws.readyState === WEBSOCKET_OPEN) {
-        ws.send(JSON.stringify({
-          type: 'heartbeat',
-          timestamp: Date.now()
-        }));
+      // For regular users, return their bookings
+      if (req.user.role === "user") {
+        const bookings = await storage.getBookingsByUser(req.user.id);
+        return res.json(bookings);
       }
-    });
-  }, HEARTBEAT_INTERVAL);
-  
-  // Clean up interval on server close
-  wss.on('close', () => {
-    clearInterval(heartbeatInterval);
-  });
-  
-  wss.on('connection', (ws) => {
-    console.log('New WebSocket connection established');
-    
-    // Initialize connection properties
-    ws.isAlive = true;
-    ws.userId = null;
-    
-    // Handle authentication and store user information
-    ws.on('message', async (message) => {
-      try {
-        const data = JSON.parse(message.toString());
+      
+      // For business users, return all bookings for their courts
+      else if (req.user.role === "business") {
+        const businesses = await storage.getBusinessesByOwner(req.user.id);
+        let allBookings = [];
         
-        // Handle different message types
-        switch (data.type) {
-          case 'auth':
-            // Authenticate user and store their ID with the connection
-            if (data.userId) {
-              activeConnections.set(data.userId, ws);
-              ws.userId = data.userId; // Store userId directly on the connection
-              console.log(`User ${data.userId} authenticated on WebSocket`);
-              
-              // Send acknowledgment
-              ws.send(JSON.stringify({ 
-                type: 'auth_success',
-                message: 'Authentication successful' 
-              }));
-            }
-            break;
-            
-          case 'chat_message':
-            // Handle a new chat message
-            if (data.message && data.senderId && (data.receiverId || data.chatGroupId)) {
-              // Encrypt message content before storing in database
-              const encryptedContent = encryptMessage(data.message);
-              
-              // Store the encrypted message
-              const chatMessage = await storage.createChatMessage({
-                senderId: data.senderId,
-                receiverId: data.receiverId,
-                chatGroupId: data.chatGroupId,
-                content: encryptedContent,
-                messageId: data.messageId
-              });
-              
-              // Create message with decrypted content for sending to clients
-              const messageWithDecryptedContent = {
-                ...chatMessage,
-                content: data.message // Use original unencrypted message for clients
-              };
-              
-              // Include message ID in the response for delivery confirmation
-              const responseData = {
-                type: 'chat_message',
-                messageId: data.messageId || `server-${Date.now()}`,
-                message: messageWithDecryptedContent
-              };
-              
-              // Broadcast to chat group members if it's a group chat
-              if (data.chatGroupId) {
-                const groupMembers = await storage.getEventParticipantsByEvent(data.chatGroupId);
-                groupMembers.forEach(member => {
-                  const memberWs = activeConnections.get(member.userId);
-                  if (memberWs && memberWs.readyState === WEBSOCKET_OPEN) {
-                    memberWs.send(JSON.stringify(responseData));
-                  }
-                });
-              } 
-              // Send to specific user if it's a direct message
-              else if (data.receiverId) {
-                const receiverWs = activeConnections.get(data.receiverId);
-                if (receiverWs && receiverWs.readyState === WEBSOCKET_OPEN) {
-                  receiverWs.send(JSON.stringify(responseData));
-                }
-              }
-              
-              // Send delivery confirmation back to sender
-              if (data.messageId) {
-                ws.send(JSON.stringify({
-                  type: 'message_delivered',
-                  messageId: data.messageId,
-                  timestamp: Date.now()
-                }));
-              }
-            }
-            break;
-            
-          case 'message_delivered':
-            // Forward delivery confirmation to the original sender
-            if (data.messageId && data.userId) {
-              const originalSenderId = data.messageId.split('-').pop();
-              if (originalSenderId) {
-                const senderWs = activeConnections.get(parseInt(originalSenderId));
-                if (senderWs && senderWs.readyState === WEBSOCKET_OPEN) {
-                  senderWs.send(JSON.stringify({
-                    type: 'message_delivered',
-                    messageId: data.messageId,
-                    userId: data.userId,
-                    timestamp: Date.now()
-                  }));
-                }
-              }
-            }
-            break;
-            
-          case 'message_read':
-            // Handle message read confirmation
-            if (data.messageId && data.userId) {
-              // Forward read confirmation to the original sender
-              const originalSenderId = data.messageId.split('-').pop();
-              if (originalSenderId) {
-                const senderWs = activeConnections.get(parseInt(originalSenderId));
-                if (senderWs && senderWs.readyState === WEBSOCKET_OPEN) {
-                  senderWs.send(JSON.stringify({
-                    type: 'message_read',
-                    messageId: data.messageId,
-                    userId: data.userId,
-                    timestamp: Date.now()
-                  }));
-                }
-              }
-            }
-            break;
-            
-          case 'mark_read':
-            // Mark messages as read
-            if (data.userId && (data.chatGroupId || data.senderId)) {
-              await storage.markMessagesAsRead(data.userId, data.chatGroupId);
-              console.log(`Marked messages as read for user ${data.userId}`);
-              
-              // Notify the sender that their messages were read
-              if (data.senderId) {
-                const senderWs = activeConnections.get(data.senderId);
-                if (senderWs && senderWs.readyState === WEBSOCKET_OPEN) {
-                  senderWs.send(JSON.stringify({
-                    type: 'message_read',
-                    userId: data.userId,
-                    timestamp: Date.now()
-                  }));
-                }
-              }
-            }
-            break;
-            
-          case 'typing':
-          case 'typing_stop':
-            // Handle typing indicators
-            if (data.userId && (data.chatGroupId || data.recipientId)) {
-              if (data.chatGroupId) {
-                // Broadcast typing status to all group members
-                const groupMembers = await storage.getEventParticipantsByEvent(data.chatGroupId);
-                groupMembers.forEach(member => {
-                  if (member.userId !== data.userId) {
-                    const memberWs = activeConnections.get(member.userId);
-                    if (memberWs && memberWs.readyState === WEBSOCKET_OPEN) {
-                      memberWs.send(JSON.stringify({
-                        type: data.type,
-                        userId: data.userId,
-                        chatGroupId: data.chatGroupId,
-                        timestamp: data.timestamp || Date.now()
-                      }));
-                    }
-                  }
-                });
-              } else if (data.recipientId) {
-                // Send typing status to specific recipient
-                const recipientWs = activeConnections.get(data.recipientId);
-                if (recipientWs && recipientWs.readyState === WEBSOCKET_OPEN) {
-                  recipientWs.send(JSON.stringify({
-                    type: data.type,
-                    userId: data.userId,
-                    timestamp: data.timestamp || Date.now()
-                  }));
-                }
-              }
-            }
-            break;
-            
-          case 'heartbeat':
-            // Respond to client heartbeat
-            ws.isAlive = true;
-            ws.send(JSON.stringify({
-              type: 'heartbeat_ack',
-              timestamp: Date.now()
-            }));
-            break;
-            
-          case 'heartbeat_ack':
-            // Client acknowledged heartbeat
-            ws.isAlive = true;
-            break;
-        }
-      } catch (error) {
-        console.error('WebSocket message error:', error);
-        ws.send(JSON.stringify({ 
-          type: 'error', 
-          message: 'Failed to process message' 
-        }));
-      }
-    });
-    
-    // Handle disconnection
-    ws.on('close', () => {
-      // Remove the connection from active connections
-      if (ws.userId) {
-        activeConnections.delete(ws.userId);
-        console.log(`User ${ws.userId} disconnected from WebSocket`);
-      } else {
-        // If userId isn't directly on the connection, search through the map
-        for (const [userId, connection] of activeConnections.entries()) {
-          if (connection === ws) {
-            activeConnections.delete(userId);
-            console.log(`User ${userId} disconnected from WebSocket`);
-            break;
+        for (const business of businesses) {
+          const courts = await storage.getCourtsByBusiness(business.id);
+          for (const court of courts) {
+            const bookings = await storage.getBookingsByCourt(court.id);
+            allBookings = [...allBookings, ...bookings];
           }
         }
+        
+        return res.json(allBookings);
       }
-    });
+      
+      return res.status(403).json({ error: "Unauthorized" });
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: "Server error" });
+    }
   });
   
+  app.get("/api/courts/:courtId/bookings", async (req, res) => {
+    try {
+      const courtId = parseInt(req.params.courtId);
+      if (isNaN(courtId)) {
+        return res.status(400).json({ error: "Invalid court ID" });
+      }
+      
+      const court = await storage.getCourt(courtId);
+      if (!court) {
+        return res.status(404).json({ error: "Court not found" });
+      }
+      
+      // Get date range from query params, if provided
+      const { startDate, endDate } = req.query;
+      
+      if (startDate && endDate) {
+        const start = new Date(startDate as string);
+        const end = new Date(endDate as string);
+        
+        if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+          return res.status(400).json({ error: "Invalid date format" });
+        }
+        
+        const bookings = await storage.getBookingsByTimeRange(courtId, start, end);
+        return res.json(bookings);
+      }
+      
+      const bookings = await storage.getBookingsByCourt(courtId);
+      return res.json(bookings);
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: "Server error" });
+    }
+  });
+  
+  app.post("/api/courts/:courtId/bookings", async (req, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      
+      const courtId = parseInt(req.params.courtId);
+      if (isNaN(courtId)) {
+        return res.status(400).json({ error: "Invalid court ID" });
+      }
+      
+      const court = await storage.getCourt(courtId);
+      if (!court) {
+        return res.status(404).json({ error: "Court not found" });
+      }
+      
+      // Check if court is available
+      if (!court.isAvailable) {
+        return res.status(400).json({ error: "Court is not available for booking" });
+      }
+      
+      const validationResult = insertBookingSchema.safeParse({
+        ...req.body,
+        courtId,
+        userId: req.user.id
+      });
+      
+      if (!validationResult.success) {
+        return res.status(400).json({ error: validationResult.error.errors });
+      }
+      
+      const { startTime, endTime } = validationResult.data;
+      
+      // Check for conflicting bookings
+      const existingBookings = await storage.getBookingsByTimeRange(
+        courtId,
+        new Date(startTime),
+        new Date(endTime)
+      );
+      
+      if (existingBookings.length > 0) {
+        return res.status(400).json({ error: "Time slot already booked" });
+      }
+      
+      const booking = await storage.createBooking(validationResult.data);
+      return res.status(201).json(booking);
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: "Server error" });
+    }
+  });
+  
+  // Chat routes
+  app.get("/api/chat/groups", async (req, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      
+      const chatGroups = await storage.getChatGroupsByUser(req.user.id);
+      return res.json(chatGroups);
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: "Server error" });
+    }
+  });
+
+  app.post("/api/chat/groups", async (req, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      
+      const validationResult = insertChatGroupSchema.safeParse(req.body);
+      if (!validationResult.success) {
+        return res.status(400).json({ error: validationResult.error.errors });
+      }
+      
+      // Create the chat group
+      const chatGroup = await storage.createChatGroup(validationResult.data);
+      
+      // Add the creator as a member
+      await storage.addUserToChatGroup(req.user.id, chatGroup.id);
+      
+      // If other members were specified, add them too
+      if (req.body.members && Array.isArray(req.body.members)) {
+        for (const memberId of req.body.members) {
+          await storage.addUserToChatGroup(memberId, chatGroup.id);
+        }
+      }
+      
+      return res.status(201).json(chatGroup);
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: "Server error" });
+    }
+  });
+  
+  app.get("/api/chat/groups/:id/messages", async (req, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      
+      const groupId = parseInt(req.params.id);
+      if (isNaN(groupId)) {
+        return res.status(400).json({ error: "Invalid group ID" });
+      }
+      
+      const chatGroup = await storage.getChatGroup(groupId);
+      if (!chatGroup) {
+        return res.status(404).json({ error: "Chat group not found" });
+      }
+      
+      // Check if user is a member of this group
+      const userGroups = await storage.getChatGroupsByUser(req.user.id);
+      const isMember = userGroups.some(g => g.id === groupId);
+      
+      if (!isMember) {
+        return res.status(403).json({ error: "Not a member of this chat group" });
+      }
+      
+      const messages = await storage.getChatMessages(groupId);
+      
+      // Mark messages as read
+      await storage.markMessagesAsRead(req.user.id, groupId);
+      
+      return res.json(messages);
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: "Server error" });
+    }
+  });
+  
+  app.post("/api/chat/messages", async (req, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      
+      const validationResult = insertChatMessageSchema.safeParse({
+        ...req.body,
+        senderId: req.user.id
+      });
+      
+      if (!validationResult.success) {
+        return res.status(400).json({ error: validationResult.error.errors });
+      }
+      
+      const messageData = validationResult.data;
+      
+      // Check that either chatGroupId or receiverId is present
+      if (!messageData.chatGroupId && !messageData.receiverId) {
+        return res.status(400).json({ error: "Either chatGroupId or receiverId is required" });
+      }
+      
+      // If sending to a group, check if user is a member
+      if (messageData.chatGroupId) {
+        const userGroups = await storage.getChatGroupsByUser(req.user.id);
+        const isMember = userGroups.some(g => g.id === messageData.chatGroupId);
+        
+        if (!isMember) {
+          return res.status(403).json({ error: "Not a member of this chat group" });
+        }
+      }
+      
+      const message = await storage.createChatMessage(messageData);
+      
+      // In a real app, would broadcast via WebSocket here
+      // For now, we'll just return the created message
+      
+      return res.status(201).json(message);
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: "Server error" });
+    }
+  });
+  
+  app.get("/api/chat/direct/:userId", async (req, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      
+      const userId = parseInt(req.params.userId);
+      if (isNaN(userId)) {
+        return res.status(400).json({ error: "Invalid user ID" });
+      }
+      
+      const messages = await storage.getDirectMessages(req.user.id, userId);
+      
+      // Mark messages as read
+      await storage.markMessagesAsRead(req.user.id);
+      
+      return res.json(messages);
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: "Server error" });
+    }
+  });
+
   return httpServer;
 }

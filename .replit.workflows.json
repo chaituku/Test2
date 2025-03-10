@@ -1,15 +1,17 @@
 {
-  "workflows": [
-    {
-      "name": "start",
-      "run": "bash start-server.sh",
-      "default": true,
-      "restartOn": {
-        "watch": [
-          "server/**/*.ts", 
-          "shared/**/*.ts"
-        ]
-      }
+  "workflowsVersion": 0,
+  "availableWorkflows": {
+    "Application": {
+      "command": "bash start-app.sh",
+      "runOnOpen": false
+    },
+    "Start application": {
+      "command": "npm run dev",
+      "runOnOpen": false
+    },
+    "Build client": {
+      "command": "npx vite build client",
+      "runOnOpen": false
     }
-  ]
+  }
 }

@@ -13,6 +13,8 @@ import AuthPage from "./pages/auth-page";
 import NotFound from "./pages/not-found";
 import BusinessDashboard from "./pages/business-dashboard";
 import ChatPage from "./pages/chat-page";
+import BookingsPage from "./pages/bookings-page";
+import EventsPage from "./pages/events-page";
 
 export default function App() {
   return (
@@ -47,7 +49,8 @@ function Router() {
       <Route path="/auth" component={AuthPage} />
       <ProtectedPage path="/business" component={BusinessDashboard} />
       <ProtectedPage path="/chat" component={ChatPage} />
-      <ProtectedPage path="/bookings" component={() => <div>Bookings Page</div>} />
+      <ProtectedPage path="/bookings" component={BookingsPage} />
+      <ProtectedPage path="/events" component={EventsPage} />
       <ProtectedPage path="/" component={HomePage} />
       <Route component={NotFound} />
     </Switch>
