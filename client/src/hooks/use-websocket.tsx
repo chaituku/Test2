@@ -1,11 +1,36 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, createContext, useContext, ReactNode } from 'react';
 import { webSocketService, MessageType } from '../lib/websocket';
 import { useAuth } from './use-auth';
 import { ChatMessage } from '../../shared/schema';
 
 export type WebSocketConnectionState = 'connecting' | 'connected' | 'disconnected' | 'error';
 
+// Create WebSocket context
+type WebSocketContextType = ReturnType<typeof useWebSocketState> | null;
+const WebSocketContext = createContext<WebSocketContextType>(null);
+
+// WebSocket Provider component
+export function WebSocketProvider({ children }: { children: ReactNode }) {
+  const websocketState = useWebSocketState();
+  
+  return (
+    <WebSocketContext.Provider value={websocketState}>
+      {children}
+    </WebSocketContext.Provider>
+  );
+}
+
+// Hook to use the WebSocket context
 export function useWebSocket() {
+  const context = useContext(WebSocketContext);
+  if (!context) {
+    throw new Error('useWebSocket must be used within a WebSocketProvider');
+  }
+  return context;
+}
+
+// Internal hook with all the WebSocket state and logic
+function useWebSocketState() {
   const { user } = useAuth();
   const [connectionState, setConnectionState] = useState<WebSocketConnectionState>('disconnected');
   const [messages, setMessages] = useState<ChatMessage[]>([]);

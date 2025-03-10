@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link, useLocation } from 'wouter';
-import { ConnectionStatusIndicator } from '@/components/connection-status';
-import { useAuth } from '@/hooks/use-auth';
+import { ConnectionStatusIndicator } from '../connection-status';
+import { useAuth } from '../../hooks/use-auth';
 import { 
   CalendarDays, 
   Home, 
@@ -10,7 +10,7 @@ import {
   MessageSquare,
   Building2
 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { Button } from '../ui/button';
 
 interface AppLayoutProps {
   children: React.ReactNode;

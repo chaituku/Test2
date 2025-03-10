@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useWebSocket } from '../hooks/use-websocket';
 import { useAuth } from '../hooks/use-auth';
 import { useQuery } from '@tanstack/react-query';
-import { ChatGroup, ChatMessage, User } from '@shared/schema';
+import { ChatGroup, ChatMessage, User } from '../../shared/schema';
 import { format } from 'date-fns';
 import { SendHorizontal, Users, UserPlus, Phone, Video, Info, Search } from 'lucide-react';
 

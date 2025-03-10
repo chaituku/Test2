@@ -1,0 +1,1 @@
+{"runs": {"dev": "node --require esbuild-register server/index.ts"}}

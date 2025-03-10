@@ -4,16 +4,12 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import * as schema from '../shared/schema';
 
-// Create a connection pool using config
+// Create a connection pool using DATABASE_URL environment variable
 const pool = new Pool({
-  host: config.database.host,
-  port: config.database.port,
-  database: config.database.database,
-  user: config.database.user,
-  password: config.database.password,
-  ssl: config.database.ssl,
-  max: config.database.max_connections,
-  idleTimeoutMillis: config.database.idle_timeout,
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false
+  }
 });
 
 // Test connection on startup

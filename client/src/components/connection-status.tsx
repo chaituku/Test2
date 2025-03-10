@@ -7,7 +7,7 @@ import {
   TooltipTrigger 
 } from './ui/tooltip';
 import { Badge } from './ui/badge';
-import { webSocketService } from '@/lib/websocket';
+import { webSocketService } from '../lib/websocket';
 
 type ConnectionStatus = 'connected' | 'connecting' | 'disconnected' | 'error';
 

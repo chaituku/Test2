@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { WebSocket, WebSocketServer } from "ws";
+import * as WebSocket from "ws";
 import { setupAuth } from "./auth";
 import { storage } from "./storage";
 import crypto from "crypto";
@@ -559,7 +559,7 @@ export function registerRoutes(app: Express): Server {
   const httpServer = createServer(app);
   
   // Setup WebSocket server
-  const wss = new ws.Server({ server: httpServer, path: '/ws' });
+  const wss = new WebSocket.Server({ server: httpServer, path: '/ws' });
   
   // Map to store active connections
   const activeConnections = new Map();
@@ -579,10 +579,12 @@ export function registerRoutes(app: Express): Server {
       ws.isAlive = false;
       
       // Send heartbeat
-      ws.send(JSON.stringify({
-        type: 'heartbeat',
-        timestamp: Date.now()
-      }));
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'heartbeat',
+          timestamp: Date.now()
+        }));
+      }
     });
   }, HEARTBEAT_INTERVAL);
   
